@@ -12,9 +12,7 @@ First, open your terminal. Then, run these two command lines :
 
     git pull
     
-# =============================================================================
 # VALORMICRO PIPELINE INSTALLATION - DIRECT COMMANDS
-# =============================================================================
 
 # 1. Create and navigate to working directory
 export ROOTDIR="/XXXXXX/valormicro_nc"
