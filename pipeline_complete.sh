@@ -1,13 +1,14 @@
-#!/usr/bin
+#!/usr/bin/env bash
 #SBATCH --job-name=valormicro
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=36
-##SBATCH -p long
-##SBATCH --mem=90G
+#SBATCH --partition=all
+#SBATCH --mem=90G
 #SBATCH --mail-user=pierrelouis.stenger@gmail.com
 #SBATCH --mail-type=ALL
 #SBATCH --error="/nvme/bio/data_fungi/valormicro_nc/00_scripts/valormicro.err"
 #SBATCH --output="/nvme/bio/data_fungi/valormicro_nc/00_scripts/valormicro.out"
+
 
 set -euo pipefail
 
