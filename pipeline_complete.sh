@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin
 #SBATCH --job-name=valormicro
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=36
