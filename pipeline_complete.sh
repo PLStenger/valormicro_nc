@@ -9,15 +9,16 @@
 #SBATCH --output="/nvme/bio/data_fungi/valormicro_nc/00_scripts/valormicro.out"
 
 set -euo pipefail
+trap 'echo -e "\n[ERROR $(date +'%F %T')]\nCommand failed with exit code $?\n" >&2' ERR
 
 export ROOTDIR="/nvme/bio/data_fungi/valormicro_nc"
-export NTHREADS=16    # ← adapté au nombre de CPUs alloués
+export NTHREADS=16
 export TMPDIR="${ROOTDIR}/tmp"
 mkdir -p "$TMPDIR"
 
 log() { echo -e "\n[$(date +'%F %T')] $*\n"; }
-
 log "Initialisation OK"
+
 
 # ---- 00 Génération automatique des métadonnées
 log "Génération automatique des fichiers manifest et metadata"
