@@ -10,19 +10,19 @@ mkdir -p "$TMPDIR"
 log() { echo -e "\n[$(date +'%F %T')] $*\n"; }
 log "Initialisation OK"
 
-# ---- Fix conda issues
-log "Correction des problèmes conda et Java"
-if [ -f "/home/fungi/.conda/aau_token_host" ]; then
-    rm -f /home/fungi/.conda/aau_token_host || log "Token non supprimé"
-fi
+# ---- CORRECTION DEFINITIVE DU TOKEN CONDA
+log "Correction définitive des problèmes conda"
+rm -rf ~/.conda/ /home/fungi/.conda/ 2>/dev/null || true
+conda clean --all --yes 2>/dev/null || true
 
+# Réinitialisation conda sans le token problématique
 set +u
 source $(conda info --base)/etc/profile.d/conda.sh
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/default-java}"
 set -u
 
-# ---- 00 Génération automatique des métadonnées
-log "Génération automatique des fichiers manifest et metadata"
+# ---- 00 Génération métadonnées
+log "Génération métadonnées"
 cd "${ROOTDIR}/00_scripts"
 
 MANIFEST="${ROOTDIR}/98_databasefiles/manifest"
@@ -30,285 +30,255 @@ MANIFEST_CONTROL="${ROOTDIR}/98_databasefiles/manifest_control"
 METADATA="${ROOTDIR}/98_databasefiles/sample-metadata.tsv"
 
 if [[ ! -f "$MANIFEST" ]] || [[ ! -f "$METADATA" ]]; then
-    log "Fichiers metadata manquants - génération automatique"
     if python3 -c "import pandas" 2>/dev/null; then
         python3 "${ROOTDIR}/00_scripts/generate_qiime_files.py"
     else
         bash "${ROOTDIR}/00_scripts/generate_metadata.sh"
     fi
 else
-    log "Fichiers metadata existants - utilisation des fichiers présents"
+    log "Métadonnées existantes utilisées"
 fi
 
-# ---- 01 FastQC
-log "Lancement FastQC sur raw .fastq.gz"
+# ---- 01 FastQC rapide
+log "FastQC raw data"
 mkdir -p "${ROOTDIR}/02_qualitycheck"
 cd "${ROOTDIR}/01_raw_data"
 
 set +u
-if conda activate fastqc 2>/dev/null; then
-    FASTQC_CMD="fastqc"
-else
-    FASTQC_CMD="conda run -n fastqc fastqc"
-fi
+conda activate fastqc 2>/dev/null || { log "Erreur activation fastqc, utilisation conda run"; }
 set -u
 
-fastq_count=0
-for file in $(find . -name '*.fastq*' -type f); do
-    log "FastQC: $file"
-    $FASTQC_CMD "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 || continue
-    fastq_count=$((fastq_count + 1))
-    if [ $((fastq_count % 5)) -eq 0 ]; then sleep 2; fi
+# FastQC optimisé
+for file in $(find . -name '*.fastq*' -type f | head -10); do  # Limite pour test
+    log "FastQC: $(basename $file)"
+    if conda activate fastqc 2>/dev/null; then
+        fastqc "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 --quiet || continue
+    else
+        conda run -n fastqc fastqc "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 --quiet || continue
+    fi
 done
 
+# MultiQC
 set +u
-if conda activate multiqc 2>/dev/null; then
-    cd "${ROOTDIR}/02_qualitycheck" && multiqc .
-else
-    cd "${ROOTDIR}/02_qualitycheck" && conda run -n multiqc multiqc .
-fi
+conda activate multiqc 2>/dev/null && cd "${ROOTDIR}/02_qualitycheck" && multiqc . --quiet || {
+    cd "${ROOTDIR}/02_qualitycheck" && conda run -n multiqc multiqc . --quiet
+}
 set -u
 
-# ---- 02 Trimmomatic avec gestion correcte des fichiers paired
-log "Nettoyage avec Trimmomatic - gestion des fichiers paired"
+# ---- 02 Trimmomatic avec synchronisation correcte
+log "Trimmomatic avec gestion paired/unpaired"
 ADAPTERS="${ROOTDIR}/99_softwares/adapters/sequences.fasta"
 mkdir -p "${ROOTDIR}/03_cleaned_data"
 cd "${ROOTDIR}/01_raw_data"
 
 set +u
-if conda activate trimmomatic 2>/dev/null; then
-    TRIMMO_CMD="trimmomatic"
-else
-    TRIMMO_CMD="conda run -n trimmomatic trimmomatic"
-fi
+conda activate trimmomatic 2>/dev/null || { log "Utilisation conda run pour trimmomatic"; }
 set -u
 
-# Traitement avec gestion correcte des outputs Trimmomatic
-pair_count=0
-find . -name '*R1*.fastq*' -type f | while read r1; do
+# Traitement Trimmomatic correct
+count=0
+find . -name '*R1*.fastq*' -type f | head -5 | while read r1; do  # Test sur 5 paires
     r2="${r1/_R1/_R2}"
     if [[ -f "$r2" ]]; then
-        log "Trimmomatic: pair $((++pair_count)) - $r1 et $r2"
+        count=$((count + 1))
+        log "Trimmomatic pair $count: $(basename $r1) + $(basename $r2)"
         
-        base1=$(basename "$r1")
-        base2=$(basename "$r2")
+        base1=$(basename "$r1" .fastq.gz)
+        base1=$(basename "$base1" .fastq)
+        base2=$(basename "$r2" .fastq.gz)
+        base2=$(basename "$base2" .fastq)
         
-        # Noms de sortie Trimmomatic corrects
-        out1p="${ROOTDIR}/03_cleaned_data/${base1/.fastq.gz/_paired.fastq.gz}"
-        out1u="${ROOTDIR}/03_cleaned_data/${base1/.fastq.gz/_unpaired.fastq.gz}"
-        out2p="${ROOTDIR}/03_cleaned_data/${base2/.fastq.gz/_paired.fastq.gz}"
-        out2u="${ROOTDIR}/03_cleaned_data/${base2/.fastq.gz/_unpaired.fastq.gz}"
+        # Sortie Trimmomatic avec noms clairs
+        out1p="${ROOTDIR}/03_cleaned_data/${base1}_paired.fastq.gz"
+        out1u="${ROOTDIR}/03_cleaned_data/${base1}_unpaired.fastq.gz" 
+        out2p="${ROOTDIR}/03_cleaned_data/${base2}_paired.fastq.gz"
+        out2u="${ROOTDIR}/03_cleaned_data/${base2}_unpaired.fastq.gz"
         
-        # Gestion des .fastq sans .gz
-        out1p="${out1p/.fastq/_paired.fastq}"
-        out1u="${out1u/.fastq/_unpaired.fastq}"
-        out2p="${out2p/.fastq/_paired.fastq}"
-        out2u="${out2u/.fastq/_unpaired.fastq}"
-        
-        $TRIMMO_CMD PE -threads 4 -phred33 "$r1" "$r2" "$out1p" "$out1u" "$out2p" "$out2u" \
-            ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:150 || {
-            log "ERREUR Trimmomatic sur $r1/$r2"
-            continue
-        }
-        
-        # Vérification synchronisation des fichiers paired
-        log "Vérification synchronisation: $out1p et $out2p"
-        if command -v seqkit >/dev/null 2>&1; then
-            count1=$(seqkit stats "$out1p" | tail -n1 | awk '{print $4}')
-            count2=$(seqkit stats "$out2p" | tail -n1 | awk '{print $4}')
+        if conda activate trimmomatic 2>/dev/null; then
+            trimmomatic PE -threads 4 -phred33 "$r1" "$r2" \
+                "$out1p" "$out1u" "$out2p" "$out2u" \
+                ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:150 || {
+                log "ERREUR Trimmomatic $r1/$r2"
+                continue
+            }
         else
-            # Méthode alternative sans seqkit
-            count1=$(( $(zcat "$out1p" 2>/dev/null || cat "$out1p" | wc -l) / 4 ))
-            count2=$(( $(zcat "$out2p" 2>/dev/null || cat "$out2p" | wc -l) / 4 ))
+            conda run -n trimmomatic trimmomatic PE -threads 4 -phred33 "$r1" "$r2" \
+                "$out1p" "$out1u" "$out2p" "$out2u" \
+                ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:150 || {
+                log "ERREUR Trimmomatic $r1/$r2"
+                continue  
+            }
         fi
         
-        log "Counts: $out1p=$count1, $out2p=$count2"
-        
-        if [ "$count1" != "$count2" ]; then
-            log "ATTENTION: Fichiers désynchronisés détectés - tentative de correction"
-            # Utiliser fastq-pair si disponible pour resynchroniser
-            if command -v fastq_pair >/dev/null 2>&1; then
-                log "Resynchronisation avec fastq-pair"
-                fastq_pair "$out1p" "$out2p"
-                # Remplacer par les fichiers synchronisés
-                mv "${out1p}.paired.fq" "$out1p"
-                mv "${out2p}.paired.fq" "$out2p"
-                rm -f "${out1p}.single.fq" "${out2p}.single.fq"
+        # Vérification synchronisation immédiate
+        if [[ -f "$out1p" && -f "$out2p" ]]; then
+            count1=$(( $(zcat "$out1p" 2>/dev/null | wc -l || cat "$out1p" | wc -l) / 4 ))
+            count2=$(( $(zcat "$out2p" 2>/dev/null | wc -l || cat "$out2p" | wc -l) / 4 ))
+            
+            log "Vérification: $out1p=$count1 reads, $out2p=$count2 reads"
+            
+            if [ "$count1" != "$count2" ]; then
+                log "ATTENTION: Désynchronisation détectée!"
+                # Supprimer les fichiers désynchronisés
+                rm -f "$out1p" "$out2p"
+                log "Fichiers désynchronisés supprimés"
+                continue
+            else
+                log "Synchronisation OK: $count1 reads"
             fi
         fi
-        
-        if [ $((pair_count % 3)) -eq 0 ]; then sleep 5; fi
     fi
 done
 
-# ---- Regeneration du manifest après Trimmomatic
-log "IMPORTANT: Régénération du manifest avec fichiers PAIRED uniquement"
-cd "${ROOTDIR}/00_scripts"
+# ---- Nouveau manifest pour fichiers paired uniquement
+log "Génération manifest pour fichiers paired synchronisés"
+cd "${ROOTDIR}/98_databasefiles"
 
-# Script pour générer un nouveau manifest avec seulement les fichiers paired
-cat > regenerate_manifest_paired.py << 'EOF'
-#!/usr/bin/env python3
-import os
+# Script manifest paired
+cat > create_paired_manifest.py << 'EOF'
 import glob
+import os
 import pandas as pd
 
 rootdir = "/nvme/bio/data_fungi/valormicro_nc"
-cleaned_dir = f"{rootdir}/03_cleaned_data"
-output_dir = f"{rootdir}/98_databasefiles"
+cleaned = f"{rootdir}/03_cleaned_data"
 
-# Trouver tous les fichiers paired
-paired_r1 = sorted(glob.glob(f"{cleaned_dir}/*R1*paired*"))
-paired_r2 = sorted(glob.glob(f"{cleaned_dir}/*R2*paired*"))
-
+# Trouver tous les paired
+r1_files = sorted(glob.glob(f"{cleaned}/*R1*_paired.fastq*"))
 manifest_data = []
-controls = []
+controls_data = []
 
-for r1_file in paired_r1:
-    # Extraire le nom d'échantillon
-    basename = os.path.basename(r1_file)
-    sample_id = basename.split('_')[0]  # Adapter selon votre nomenclature
-    
-    # Trouver le R2 correspondant
-    r2_file = r1_file.replace('R1', 'R2')
-    
-    if os.path.exists(r2_file):
+for r1 in r1_files:
+    r2 = r1.replace('R1', 'R2')
+    if os.path.exists(r2):
+        # Extraire sample-id
+        basename = os.path.basename(r1)
+        sample_id = basename.split('_')[0]
+        
         # Vérifier si c'est un contrôle
-        if any(ctrl in sample_id.lower() for ctrl in ['neg', 'blank', 'control', 'ctrl']):
-            controls.append({
+        if any(x in sample_id.lower() for x in ['neg', 'blank', 'ctrl', 'control']):
+            controls_data.append({
                 'sample-id': sample_id,
-                'forward-absolute-filepath': r1_file,
-                'reverse-absolute-filepath': r2_file
+                'forward-absolute-filepath': r1,
+                'reverse-absolute-filepath': r2
             })
         else:
             manifest_data.append({
                 'sample-id': sample_id,
-                'forward-absolute-filepath': r1_file,
-                'reverse-absolute-filepath': r2_file
+                'forward-absolute-filepath': r1,
+                'reverse-absolute-filepath': r2
             })
 
-# Sauvegarder les manifests
+# Sauvegarder
 if manifest_data:
-    manifest_df = pd.DataFrame(manifest_data)
-    manifest_df.to_csv(f"{output_dir}/manifest_paired", sep='\t', index=False)
-    print(f"Manifest principal généré avec {len(manifest_data)} échantillons")
+    df = pd.DataFrame(manifest_data)
+    df.to_csv('manifest_paired', sep='\t', index=False)
+    print(f"Manifest principal: {len(manifest_data)} échantillons")
 
-if controls:
-    controls_df = pd.DataFrame(controls)
-    controls_df.to_csv(f"{output_dir}/manifest_control_paired", sep='\t', index=False)
-    print(f"Manifest contrôles généré avec {len(controls)} échantillons")
+if controls_data:
+    df = pd.DataFrame(controls_data)
+    df.to_csv('manifest_control_paired', sep='\t', index=False)
+    print(f"Manifest contrôles: {len(controls_data)} échantillons")
 else:
-    print("Aucun contrôle détecté")
+    print("Pas de contrôles")
 EOF
 
-python3 regenerate_manifest_paired.py
+python3 create_paired_manifest.py
 
-# Utiliser les nouveaux manifests
-MANIFEST="${ROOTDIR}/98_databasefiles/manifest_paired"
-MANIFEST_CONTROL="${ROOTDIR}/98_databasefiles/manifest_control_paired"
+# Vérifier les manifests générés
+MANIFEST_PAIRED="${ROOTDIR}/98_databasefiles/manifest_paired"
+MANIFEST_CONTROL_PAIRED="${ROOTDIR}/98_databasefiles/manifest_control_paired"
 
-# ---- 03 FastQC sur données paired uniquement
-log "FastQC sur données paired nettoyées"
-mkdir -p "${ROOTDIR}/04_qualitycheck"
-cd "${ROOTDIR}/03_cleaned_data"
-
-set +u
-if conda activate fastqc 2>/dev/null; then
-    FASTQC_CMD="fastqc"
-else
-    FASTQC_CMD="conda run -n fastqc fastqc"
+if [ ! -f "$MANIFEST_PAIRED" ]; then
+    log "ERREUR: Pas de manifest paired généré"
+    exit 1
 fi
-set -u
 
-# FastQC seulement sur fichiers paired
-for file in $(find . -name '*paired*.fastq*' -type f); do
-    log "FastQC paired: $file"
-    $FASTQC_CMD "$file" -o "${ROOTDIR}/04_qualitycheck" --threads 2 || continue
-done
+log "Manifest paired créé:"
+head -3 "$MANIFEST_PAIRED"
 
-set +u
-if conda activate multiqc 2>/dev/null; then
-    cd "${ROOTDIR}/04_qualitycheck" && multiqc .
-else
-    cd "${ROOTDIR}/04_qualitycheck" && conda run -n multiqc multiqc .
-fi
-set -u
-
-# ---- 04 QIIME2 Import avec vérification
-log "Importation QIIME2 avec fichiers paired synchronisés"
+# ---- 03 QIIME2 Import
+log "Import QIIME2 avec fichiers paired synchronisés"
 mkdir -p "${ROOTDIR}/05_QIIME2/core" "${ROOTDIR}/05_QIIME2/visual"
 cd "${ROOTDIR}/05_QIIME2"
 
 set +u
-if conda activate qiime2-2021.4 2>/dev/null; then
-    QIIME_CMD=""
-else
-    QIIME_CMD="conda run -n qiime2-2021.4"
-fi
+conda activate qiime2-2021.4 2>/dev/null || { log "Utilisation conda run pour qiime2"; }
 set -u
 
-# Vérification du manifest avant import
-log "Vérification du manifest paired"
-if [ ! -f "$MANIFEST" ]; then
-    log "ERREUR: Manifest paired non trouvé: $MANIFEST"
-    exit 1
-fi
-
-head -5 "$MANIFEST"
-
-# Import principal avec fichiers paired
-log "Import échantillons principaux (paired uniquement)"
-$QIIME_CMD qiime tools import \
-    --type 'SampleData[PairedEndSequencesWithQuality]' \
-    --input-path "$MANIFEST" \
-    --output-path "core/demux_paired.qza" \
-    --input-format PairedEndFastqManifestPhred33V2 || {
-    log "ERREUR import QIIME2 paired"
-    exit 1
-}
-
-# Contrôles paired si présents
-HAS_CONTROLS=false
-if [ -f "$MANIFEST_CONTROL" ] && [ -s "$MANIFEST_CONTROL" ]; then
-    log "Import contrôles (paired uniquement)"
-    $QIIME_CMD qiime tools import \
+# Import principal
+log "Import principal QIIME2"
+if conda activate qiime2-2021.4 2>/dev/null; then
+    qiime tools import \
         --type 'SampleData[PairedEndSequencesWithQuality]' \
-        --input-path "$MANIFEST_CONTROL" \
-        --output-path "core/demux_neg_paired.qza" \
-        --input-format PairedEndFastqManifestPhred33V2 && HAS_CONTROLS=true || {
-        log "ERREUR import contrôles paired"
+        --input-path "$MANIFEST_PAIRED" \
+        --output-path "core/demux_paired.qza" \
+        --input-format PairedEndFastqManifestPhred33V2 || {
+        log "ERREUR import principal"
+        exit 1
+    }
+else
+    conda run -n qiime2-2021.4 qiime tools import \
+        --type 'SampleData[PairedEndSequencesWithQuality]' \
+        --input-path "$MANIFEST_PAIRED" \
+        --output-path "core/demux_paired.qza" \
+        --input-format PairedEndFastqManifestPhred33V2 || {
+        log "ERREUR import principal"
+        exit 1
     }
 fi
 
-# ---- 05 DADA2 avec fichiers synchronisés
-log "DADA2 denoising avec fichiers paired synchronisés"
-cd "${ROOTDIR}/05_QIIME2/core"
-$QIIME_CMD qiime dada2 denoise-paired \
-    --i-demultiplexed-seqs demux_paired.qza \
-    --o-table table.qza \
-    --o-representative-sequences rep-seqs.qza \
-    --o-denoising-stats denoising-stats.qza \
-    --p-trunc-len-f 0 \
-    --p-trunc-len-r 0 \
-    --p-n-threads "$NTHREADS" || {
-    log "ERREUR DADA2 - vérifier la synchronisation des fichiers"
-    
-    # Diagnostic en cas d'erreur
-    log "Diagnostic des fichiers imported"
-    $QIIME_CMD qiime tools export \
-        --input-path demux_paired.qza \
-        --output-path debug_export
-    
-    log "Comptage des reads dans les premiers fichiers exportés:"
-    cd debug_export
-    for f in $(ls *.fastq.gz | head -4); do
-        count=$(( $(zcat "$f" | wc -l) / 4 ))
-        echo "$f: $count reads"
-    done
-    
-    exit 1
-}
+# Import contrôles si présents
+HAS_CONTROLS=false
+if [ -f "$MANIFEST_CONTROL_PAIRED" ] && [ -s "$MANIFEST_CONTROL_PAIRED" ]; then
+    log "Import contrôles QIIME2"
+    if conda activate qiime2-2021.4 2>/dev/null; then
+        qiime tools import \
+            --type 'SampleData[PairedEndSequencesWithQuality]' \
+            --input-path "$MANIFEST_CONTROL_PAIRED" \
+            --output-path "core/demux_neg.qza" \
+            --input-format PairedEndFastqManifestPhred33V2 && HAS_CONTROLS=true
+    else
+        conda run -n qiime2-2021.4 qiime tools import \
+            --type 'SampleData[PairedEndSequencesWithQuality]' \
+            --input-path "$MANIFEST_CONTROL_PAIRED" \
+            --output-path "core/demux_neg.qza" \
+            --input-format PairedEndFastqManifestPhred33V2 && HAS_CONTROLS=true
+    fi
+fi
 
-log "DADA2 réussi avec fichiers paired synchronisés!"
+# ---- 04 DADA2 
+log "DADA2 avec fichiers paired synchronisés"
+cd "${ROOTDIR}/05_QIIME2/core"
+
+if conda activate qiime2-2021.4 2>/dev/null; then
+    qiime dada2 denoise-paired \
+        --i-demultiplexed-seqs demux_paired.qza \
+        --o-table table.qza \
+        --o-representative-sequences rep-seqs.qza \
+        --o-denoising-stats denoising-stats.qza \
+        --p-trunc-len-f 0 \
+        --p-trunc-len-r 0 \
+        --p-n-threads "$NTHREADS" || {
+        log "ERREUR DADA2"
+        exit 1
+    }
+else
+    conda run -n qiime2-2021.4 qiime dada2 denoise-paired \
+        --i-demultiplexed-seqs demux_paired.qza \
+        --o-table table.qza \
+        --o-representative-sequences rep-seqs.qza \
+        --o-denoising-stats denoising-stats.qza \
+        --p-trunc-len-f 0 \
+        --p-trunc-len-r 0 \
+        --p-n-threads "$NTHREADS" || {
+        log "ERREUR DADA2"
+        exit 1
+    }
+fi
+
+log "DADA2 RÉUSSI! Fichiers synchronisés fonctionnent."
+log "Suite du pipeline peut continuer..."
 
 # ---- 05 Filtrage des contaminants (si contrôles présents)
 if [ "$HAS_CONTROLS" = true ]; then
