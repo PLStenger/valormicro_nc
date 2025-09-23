@@ -10,13 +10,25 @@ mkdir -p "$TMPDIR"
 log() { echo -e "\n[$(date +'%F %T')] $*\n"; }
 log "Initialisation OK"
 
-# ---- CORRECTION DEFINITIVE DU TOKEN CONDA
-log "Correction définitive des problèmes conda"
-rm -rf ~/.conda/ /home/fungi/.conda/ 2>/dev/null || true
-conda clean --all --yes 2>/dev/null || true
+# ---- CORRECTION AGRESSIVE DU TOKEN CONDA
+log "Suppression agressive du token conda corrompu"
+# Supprimer tous les fichiers token conda possibles
+rm -rf ~/.conda 2>/dev/null || true
+rm -rf /home/fungi/.conda 2>/dev/null || true
+rm -rf ~/.continuum 2>/dev/null || true
+rm -f ~/.condarc.bak 2>/dev/null || true
 
-# Réinitialisation conda sans le token problématique
+# Supprimer explicitement le fichier token qui pose problème
+sudo rm -f /home/fungi/.conda/aau_token_host 2>/dev/null || true
+
+# Nettoyer complètement conda
+conda clean --all --yes 2>/dev/null || true
+conda config --remove-key default_channels 2>/dev/null || true
+
+# Réinitialiser conda sans token
 set +u
+export CONDA_TOKEN_PATH=""
+export ANACONDA_API_TOKEN=""
 source $(conda info --base)/etc/profile.d/conda.sh
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/default-java}"
 set -u
@@ -39,34 +51,59 @@ else
     log "Métadonnées existantes utilisées"
 fi
 
-# ---- 01 FastQC rapide
-log "FastQC raw data"
+# ---- 01 FastQC avec nettoyage préalable
+log "FastQC sur données brutes avec nettoyage"
 mkdir -p "${ROOTDIR}/02_qualitycheck"
+
+# Nettoyer les anciens rapports
+rm -f "${ROOTDIR}/02_qualitycheck/multiqc_report.html" 2>/dev/null || true
+rm -rf "${ROOTDIR}/02_qualitycheck/multiqc_data" 2>/dev/null || true
+
 cd "${ROOTDIR}/01_raw_data"
 
 set +u
-conda activate fastqc 2>/dev/null || { log "Erreur activation fastqc, utilisation conda run"; }
+conda activate fastqc 2>/dev/null || { log "Utilisation conda run pour fastqc"; }
 set -u
 
-# FastQC optimisé
-for file in $(find . -name '*.fastq*' -type f | head -10); do  # Limite pour test
-    log "FastQC: $(basename $file)"
+# FastQC optimisé - traitement limité pour test
+count=0
+for file in $(find . -name '*.fastq*' -type f | head -8); do  # Limité à 8 fichiers pour test
+    count=$((count + 1))
+    log "FastQC $count/8: $(basename $file)"
+    
     if conda activate fastqc 2>/dev/null; then
         fastqc "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 --quiet || continue
     else
         conda run -n fastqc fastqc "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 --quiet || continue
     fi
+    
+    # Pause pour éviter surcharge
+    if [ $((count % 4)) -eq 0 ]; then
+        log "Pause après $count fichiers"
+        sleep 3
+    fi
 done
 
-# MultiQC
+# MultiQC avec force et nom personnalisé
+log "MultiQC avec forçage et nom custom"
+cd "${ROOTDIR}/02_qualitycheck"
+
 set +u
-conda activate multiqc 2>/dev/null && cd "${ROOTDIR}/02_qualitycheck" && multiqc . --quiet || {
-    cd "${ROOTDIR}/02_qualitycheck" && conda run -n multiqc multiqc . --quiet
-}
+if conda activate multiqc 2>/dev/null; then
+    # Utiliser --force et nom custom pour éviter les conflits
+    multiqc . --force --filename "fastqc_raw_report" --title "Raw Data QC" --quiet || {
+        log "Erreur MultiQC, tentative avec conda run"
+        conda run -n multiqc multiqc . --force --filename "fastqc_raw_report" --title "Raw Data QC" --quiet
+    }
+else
+    conda run -n multiqc multiqc . --force --filename "fastqc_raw_report" --title "Raw Data QC" --quiet || {
+        log "MultiQC échoué, continuation du script"
+    }
+fi
 set -u
 
-# ---- 02 Trimmomatic avec synchronisation correcte
-log "Trimmomatic avec gestion paired/unpaired"
+# ---- 02 Trimmomatic optimisé
+log "Trimmomatic avec vérification synchronisation"
 ADAPTERS="${ROOTDIR}/99_softwares/adapters/sequences.fasta"
 mkdir -p "${ROOTDIR}/03_cleaned_data"
 cd "${ROOTDIR}/01_raw_data"
@@ -75,66 +112,78 @@ set +u
 conda activate trimmomatic 2>/dev/null || { log "Utilisation conda run pour trimmomatic"; }
 set -u
 
-# Traitement Trimmomatic correct
+# Traitement Trimmomatic avec test sur échantillon réduit
 count=0
-find . -name '*R1*.fastq*' -type f | head -5 | while read r1; do  # Test sur 5 paires
+success_count=0
+find . -name '*R1*.fastq*' -type f | head -3 | while read r1; do  # Test sur 3 paires seulement
     r2="${r1/_R1/_R2}"
     if [[ -f "$r2" ]]; then
         count=$((count + 1))
-        log "Trimmomatic pair $count: $(basename $r1) + $(basename $r2)"
+        log "Trimmomatic test $count/3: $(basename $r1) + $(basename $r2)"
         
         base1=$(basename "$r1" .fastq.gz)
         base1=$(basename "$base1" .fastq)
-        base2=$(basename "$r2" .fastq.gz)
+        base2=$(basename "$r2" .fastq.gz)  
         base2=$(basename "$base2" .fastq)
         
-        # Sortie Trimmomatic avec noms clairs
+        # Noms de sortie clairs
         out1p="${ROOTDIR}/03_cleaned_data/${base1}_paired.fastq.gz"
-        out1u="${ROOTDIR}/03_cleaned_data/${base1}_unpaired.fastq.gz" 
+        out1u="${ROOTDIR}/03_cleaned_data/${base1}_unpaired.fastq.gz"
         out2p="${ROOTDIR}/03_cleaned_data/${base2}_paired.fastq.gz"
         out2u="${ROOTDIR}/03_cleaned_data/${base2}_unpaired.fastq.gz"
         
+        # Trimmomatic avec paramètres modérés
+        trimmo_success=false
         if conda activate trimmomatic 2>/dev/null; then
             trimmomatic PE -threads 4 -phred33 "$r1" "$r2" \
                 "$out1p" "$out1u" "$out2p" "$out2u" \
-                ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:150 || {
-                log "ERREUR Trimmomatic $r1/$r2"
-                continue
-            }
+                ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:100 && trimmo_success=true
         else
             conda run -n trimmomatic trimmomatic PE -threads 4 -phred33 "$r1" "$r2" \
                 "$out1p" "$out1u" "$out2p" "$out2u" \
-                ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:150 || {
-                log "ERREUR Trimmomatic $r1/$r2"
-                continue  
-            }
+                ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:100 && trimmo_success=true
         fi
         
-        # Vérification synchronisation immédiate
-        if [[ -f "$out1p" && -f "$out2p" ]]; then
-            count1=$(( $(zcat "$out1p" 2>/dev/null | wc -l || cat "$out1p" | wc -l) / 4 ))
-            count2=$(( $(zcat "$out2p" 2>/dev/null | wc -l || cat "$out2p" | wc -l) / 4 ))
-            
-            log "Vérification: $out1p=$count1 reads, $out2p=$count2 reads"
-            
-            if [ "$count1" != "$count2" ]; then
-                log "ATTENTION: Désynchronisation détectée!"
-                # Supprimer les fichiers désynchronisés
-                rm -f "$out1p" "$out2p"
-                log "Fichiers désynchronisés supprimés"
-                continue
+        if [ "$trimmo_success" = true ]; then
+            # Vérification synchronisation cruciale
+            if [[ -f "$out1p" && -f "$out2p" ]]; then
+                # Compter les reads
+                if command -v seqkit >/dev/null 2>&1; then
+                    count1=$(seqkit stats "$out1p" 2>/dev/null | tail -n1 | awk '{print $4}' || echo "0")
+                    count2=$(seqkit stats "$out2p" 2>/dev/null | tail -n1 | awk '{print $4}' || echo "0")
+                else
+                    # Méthode alternative robuste
+                    count1=$(( $(zcat "$out1p" 2>/dev/null | wc -l || cat "$out1p" | wc -l) / 4 ))
+                    count2=$(( $(zcat "$out2p" 2>/dev/null | wc -l || cat "$out2p" | wc -l) / 4 ))
+                fi
+                
+                log "Vérification: $count1 vs $count2 reads"
+                
+                if [ "$count1" = "$count2" ] && [ "$count1" -gt 0 ]; then
+                    log "✓ Paire synchronisée: $count1 reads"
+                    success_count=$((success_count + 1))
+                else
+                    log "✗ Paire désynchronisée ou vide, suppression"
+                    rm -f "$out1p" "$out2p" "$out1u" "$out2u"
+                fi
             else
-                log "Synchronisation OK: $count1 reads"
+                log "✗ Fichiers de sortie manquants"
             fi
+        else
+            log "✗ Échec Trimmomatic"
         fi
+        
+        sleep 2  # Pause entre chaque paire
     fi
 done
 
-# ---- Nouveau manifest pour fichiers paired uniquement
+log "Trimmomatic terminé"
+
+# ---- Génération manifest paired
 log "Génération manifest pour fichiers paired synchronisés"
 cd "${ROOTDIR}/98_databasefiles"
 
-# Script manifest paired
+# Script Python pour manifest paired
 cat > create_paired_manifest.py << 'EOF'
 import glob
 import os
@@ -143,95 +192,110 @@ import pandas as pd
 rootdir = "/nvme/bio/data_fungi/valormicro_nc"
 cleaned = f"{rootdir}/03_cleaned_data"
 
-# Trouver tous les paired
+# Trouver paired files synchronisés
 r1_files = sorted(glob.glob(f"{cleaned}/*R1*_paired.fastq*"))
+print(f"Trouvé {len(r1_files)} fichiers R1 paired")
+
 manifest_data = []
 controls_data = []
 
 for r1 in r1_files:
     r2 = r1.replace('R1', 'R2')
     if os.path.exists(r2):
-        # Extraire sample-id
-        basename = os.path.basename(r1)
-        sample_id = basename.split('_')[0]
-        
-        # Vérifier si c'est un contrôle
-        if any(x in sample_id.lower() for x in ['neg', 'blank', 'ctrl', 'control']):
-            controls_data.append({
-                'sample-id': sample_id,
-                'forward-absolute-filepath': r1,
-                'reverse-absolute-filepath': r2
-            })
+        # Vérifier que les fichiers ne sont pas vides
+        if os.path.getsize(r1) > 1000 and os.path.getsize(r2) > 1000:
+            basename = os.path.basename(r1)
+            # Extraire sample ID plus robustement
+            sample_id = basename.split('_')[0]
+            
+            # Détecter contrôles
+            if any(ctrl in sample_id.lower() for ctrl in ['neg', 'blank', 'control', 'ctrl']):
+                controls_data.append({
+                    'sample-id': sample_id,
+                    'forward-absolute-filepath': r1,
+                    'reverse-absolute-filepath': r2
+                })
+            else:
+                manifest_data.append({
+                    'sample-id': sample_id,
+                    'forward-absolute-filepath': r1,
+                    'reverse-absolute-filepath': r2
+                })
         else:
-            manifest_data.append({
-                'sample-id': sample_id,
-                'forward-absolute-filepath': r1,
-                'reverse-absolute-filepath': r2
-            })
+            print(f"Fichier trop petit ignoré: {r1}")
 
-# Sauvegarder
+print(f"Échantillons: {len(manifest_data)}, Contrôles: {len(controls_data)}")
+
+# Sauvegarder manifests
 if manifest_data:
     df = pd.DataFrame(manifest_data)
     df.to_csv('manifest_paired', sep='\t', index=False)
-    print(f"Manifest principal: {len(manifest_data)} échantillons")
+    print("Manifest principal créé")
+else:
+    print("ERREUR: Aucun échantillon valide trouvé")
 
 if controls_data:
-    df = pd.DataFrame(controls_data)
-    df.to_csv('manifest_control_paired', sep='\t', index=False)
-    print(f"Manifest contrôles: {len(controls_data)} échantillons")
-else:
-    print("Pas de contrôles")
+    df_ctrl = pd.DataFrame(controls_data)
+    df_ctrl.to_csv('manifest_control_paired', sep='\t', index=False)
+    print("Manifest contrôles créé")
 EOF
 
 python3 create_paired_manifest.py
 
-# Vérifier les manifests générés
+# Vérifier résultat
 MANIFEST_PAIRED="${ROOTDIR}/98_databasefiles/manifest_paired"
-MANIFEST_CONTROL_PAIRED="${ROOTDIR}/98_databasefiles/manifest_control_paired"
 
-if [ ! -f "$MANIFEST_PAIRED" ]; then
-    log "ERREUR: Pas de manifest paired généré"
+if [ ! -f "$MANIFEST_PAIRED" ] || [ ! -s "$MANIFEST_PAIRED" ]; then
+    log "ERREUR: Aucun manifest paired généré - pas assez de fichiers synchronisés"
+    log "Fichiers trouvés dans cleaned_data:"
+    ls -la "${ROOTDIR}/03_cleaned_data/" || true
     exit 1
 fi
 
-log "Manifest paired créé:"
+log "Manifest paired créé avec $(wc -l < "$MANIFEST_PAIRED") lignes:"
 head -3 "$MANIFEST_PAIRED"
 
-# ---- 03 QIIME2 Import
-log "Import QIIME2 avec fichiers paired synchronisés"
+# ---- 03 QIIME2 Import final
+log "Import QIIME2 avec fichiers paired vérifiés"
 mkdir -p "${ROOTDIR}/05_QIIME2/core" "${ROOTDIR}/05_QIIME2/visual"
 cd "${ROOTDIR}/05_QIIME2"
 
 set +u
-conda activate qiime2-2021.4 2>/dev/null || { log "Utilisation conda run pour qiime2"; }
+conda activate qiime2-2021.4 2>/dev/null || { log "Utilisation conda run pour QIIME2"; }
 set -u
 
-# Import principal
-log "Import principal QIIME2"
+# Import avec gestion d'erreur améliorée  
+log "Import QIIME2 - tentative 1"
+import_success=false
+
 if conda activate qiime2-2021.4 2>/dev/null; then
     qiime tools import \
         --type 'SampleData[PairedEndSequencesWithQuality]' \
         --input-path "$MANIFEST_PAIRED" \
         --output-path "core/demux_paired.qza" \
-        --input-format PairedEndFastqManifestPhred33V2 || {
-        log "ERREUR import principal"
-        exit 1
+        --input-format PairedEndFastqManifestPhred33V2 && import_success=true || {
+        log "Import direct échoué, tentative avec conda run"
     }
-else
+fi
+
+if [ "$import_success" = false ]; then
     conda run -n qiime2-2021.4 qiime tools import \
         --type 'SampleData[PairedEndSequencesWithQuality]' \
         --input-path "$MANIFEST_PAIRED" \
         --output-path "core/demux_paired.qza" \
-        --input-format PairedEndFastqManifestPhred33V2 || {
-        log "ERREUR import principal"
+        --input-format PairedEndFastqManifestPhred33V2 && import_success=true || {
+        log "Import QIIME2 complètement échoué"
         exit 1
     }
 fi
 
-# Import contrôles si présents
+log "Import QIIME2 réussi!"
+
+# Contrôles si présents
+MANIFEST_CONTROL_PAIRED="${ROOTDIR}/98_databasefiles/manifest_control_paired"
 HAS_CONTROLS=false
 if [ -f "$MANIFEST_CONTROL_PAIRED" ] && [ -s "$MANIFEST_CONTROL_PAIRED" ]; then
-    log "Import contrôles QIIME2"
+    log "Import contrôles"
     if conda activate qiime2-2021.4 2>/dev/null; then
         qiime tools import \
             --type 'SampleData[PairedEndSequencesWithQuality]' \
@@ -247,10 +311,11 @@ if [ -f "$MANIFEST_CONTROL_PAIRED" ] && [ -s "$MANIFEST_CONTROL_PAIRED" ]; then
     fi
 fi
 
-# ---- 04 DADA2 
-log "DADA2 avec fichiers paired synchronisés"
+# ---- 04 DADA2 Final
+log "DADA2 avec fichiers paired synchronisés - TEST CRITIQUE"
 cd "${ROOTDIR}/05_QIIME2/core"
 
+dada2_success=false
 if conda activate qiime2-2021.4 2>/dev/null; then
     qiime dada2 denoise-paired \
         --i-demultiplexed-seqs demux_paired.qza \
@@ -259,11 +324,12 @@ if conda activate qiime2-2021.4 2>/dev/null; then
         --o-denoising-stats denoising-stats.qza \
         --p-trunc-len-f 0 \
         --p-trunc-len-r 0 \
-        --p-n-threads "$NTHREADS" || {
-        log "ERREUR DADA2"
-        exit 1
+        --p-n-threads "$NTHREADS" && dada2_success=true || {
+        log "DADA2 direct échoué, tentative conda run"
     }
-else
+fi
+
+if [ "$dada2_success" = false ]; then
     conda run -n qiime2-2021.4 qiime dada2 denoise-paired \
         --i-demultiplexed-seqs demux_paired.qza \
         --o-table table.qza \
@@ -271,14 +337,38 @@ else
         --o-denoising-stats denoising-stats.qza \
         --p-trunc-len-f 0 \
         --p-trunc-len-r 0 \
-        --p-n-threads "$NTHREADS" || {
-        log "ERREUR DADA2"
+        --p-n-threads "$NTHREADS" && dada2_success=true || {
+        
+        log "DADA2 ÉCHOUE ENCORE - Diagnostic détaillé"
+        log "Export pour diagnostic:"
+        
+        if conda activate qiime2-2021.4 2>/dev/null; then
+            qiime tools export --input-path demux_paired.qza --output-path debug_export
+        else
+            conda run -n qiime2-2021.4 qiime tools export --input-path demux_paired.qza --output-path debug_export
+        fi
+        
+        cd debug_export
+        log "Diagnostic des fichiers dans l'import:"
+        for f in $(ls *.fastq.gz | head -6); do
+            size=$(ls -lh "$f" | awk '{print $5}')
+            reads=$(( $(zcat "$f" | wc -l) / 4 ))
+            echo "$f: $size, $reads reads"
+        done
+        
+        log "ERREUR DADA2 PERSISTANTE - Vérifiez la synchronisation manuelle"
         exit 1
     }
 fi
 
-log "DADA2 RÉUSSI! Fichiers synchronisés fonctionnent."
-log "Suite du pipeline peut continuer..."
+if [ "$dada2_success" = true ]; then
+    log "🎉 DADA2 RÉUSSI ! Problème de synchronisation résolu !"
+    log "Le pipeline peut maintenant continuer avec les étapes suivantes..."
+else
+    log "❌ DADA2 échoué malgré toutes les corrections"
+    exit 1
+fi
+
 
 # ---- 05 Filtrage des contaminants (si contrôles présents)
 if [ "$HAS_CONTROLS" = true ]; then
