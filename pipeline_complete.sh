@@ -157,8 +157,8 @@ fi
 
 log "Fichiers paired trouvés: $paired_files"
 
-# ---- 03 GÉNÉRATION MANIFEST PAIRED (BASH - sans pandas)
-log "Génération manifest paired avec bash - SOLUTION ROBUSTE"
+# ---- 03 GÉNÉRATION MANIFEST PAIRED AVEC IDS UNIQUES (BASH - sans pandas)
+log "Génération manifest paired avec IDs UNIQUES - SOLUTION ROBUSTE"
 cd "${ROOTDIR}/98_databasefiles"
 
 # Nettoyer anciens manifests
@@ -168,12 +168,15 @@ rm -f manifest_paired manifest_control_paired
 echo -e "sample-id\tforward-absolute-filepath\treverse-absolute-filepath" > manifest_paired
 echo -e "sample-id\tforward-absolute-filepath\treverse-absolute-filepath" > manifest_control_paired
 
+# Array associatif pour éviter les doublons
+declare -A seen_ids
+
 # Scanner fichiers paired dans cleaned_data
 cd "${ROOTDIR}/03_cleaned_data"
 count=0
 control_count=0
 
-log "Scan des fichiers paired dans: $(pwd)"
+log "Scan des fichiers paired avec génération d'IDs UNIQUES dans: $(pwd)"
 for r1_file in *R1*_paired.fastq*; do
     if [ -f "$r1_file" ]; then
         # Trouver R2 correspondant
@@ -185,22 +188,45 @@ for r1_file in *R1*_paired.fastq*; do
             r2_size=$(stat -c%s "$r2_file" 2>/dev/null || echo "0")
             
             if [ "$r1_size" -gt 1000 ] && [ "$r2_size" -gt 1000 ]; then
-                # Extraire sample-id (partie avant premier _)
-                sample_id=$(echo "$r1_file" | cut -d'_' -f1)
+                
+                # ===== NOUVELLE LOGIQUE POUR IDs UNIQUES =====
+                # Utiliser le nom de fichier complet sans extensions comme base
+                base_name=$(basename "$r1_file")
+                # Supprimer toutes les extensions possibles pour avoir un sample-id propre
+                sample_id="${base_name%_R1*}"        # Supprimer _R1 et tout ce qui suit
+                sample_id="${sample_id%.fastq*}"     # Supprimer .fastq ou .fastq.gz
+                sample_id="${sample_id%.fq*}"        # Supprimer .fq ou .fq.gz  
+                sample_id="${sample_id%_paired*}"    # Supprimer _paired si présent
+                
+                # Remplacer les caractères problématiques par des underscores
+                sample_id="${sample_id//[^a-zA-Z0-9._-]/_}"
+                
+                # Vérifier l'unicité et ajuster si nécessaire
+                original_id="$sample_id"
+                counter=1
+                while [[ -n "${seen_ids[$sample_id]:-}" ]]; do
+                    sample_id="${original_id}_${counter}"
+                    counter=$((counter + 1))
+                    log "ID dupliqué détecté, nouveau: $sample_id"
+                done
+                
+                # Marquer cet ID comme utilisé
+                seen_ids["$sample_id"]=1
+                # ===== FIN NOUVELLE LOGIQUE =====
                 
                 # Chemins absolus
                 r1_abs="${ROOTDIR}/03_cleaned_data/$r1_file"
                 r2_abs="${ROOTDIR}/03_cleaned_data/$r2_file"
                 
-                # Détecter si c'est un contrôle
-                if echo "${sample_id,,}" | grep -qE "(neg|blank|control|ctrl)"; then
+                # Détecter si c'est un contrôle (inclure "eau" dans les contrôles)
+                if echo "${sample_id,,}" | grep -qE "(neg|blank|control|ctrl|eau)"; then
                     echo -e "$sample_id\t$r1_abs\t$r2_abs" >> "${ROOTDIR}/98_databasefiles/manifest_control_paired"
                     control_count=$((control_count + 1))
-                    log "Contrôle ajouté: $sample_id"
+                    log "Contrôle ajouté: $sample_id (fichier: $r1_file)"
                 else
                     echo -e "$sample_id\t$r1_abs\t$r2_abs" >> "${ROOTDIR}/98_databasefiles/manifest_paired"
                     count=$((count + 1))
-                    log "Échantillon ajouté: $sample_id"
+                    log "Échantillon ajouté: $sample_id (fichier: $r1_file)"
                 fi
             else
                 log "Fichiers trop petits ignorés: $r1_file ($r1_size B), $r2_file ($r2_size B)"
@@ -228,11 +254,26 @@ if [ $(wc -l < manifest_control_paired) -le 1 ]; then
     log "Pas de contrôles détectés"
 fi
 
-log "Contenu du manifest paired final:"
+# VÉRIFICATION FINALE ANTI-DOUBLONS
+log "Vérification finale des doublons dans le manifest"
+duplicates=$(cut -f1 manifest_paired | sort | uniq -d)
+if [ -n "$duplicates" ]; then
+    log "❌ ERREUR: Doublons encore présents: $duplicates"
+    exit 1
+else
+    log "✅ Aucun doublon - IDs uniques confirmés"
+fi
+
+log "Contenu du manifest paired final avec IDs UNIQUES:"
 cat manifest_paired
 
+if [ -f manifest_control_paired ]; then
+    log "Contenu du manifest contrôles:"  
+    cat manifest_control_paired
+fi
+
 # ---- 04 QIIME2 IMPORT
-log "QIIME2 Import avec fichiers paired synchronisés"
+log "QIIME2 Import avec fichiers paired synchronisés et IDs uniques"
 mkdir -p "${ROOTDIR}/05_QIIME2/core" "${ROOTDIR}/05_QIIME2/visual"
 cd "${ROOTDIR}/05_QIIME2"
 
@@ -240,7 +281,7 @@ MANIFEST_PAIRED="${ROOTDIR}/98_databasefiles/manifest_paired"
 MANIFEST_CONTROL_PAIRED="${ROOTDIR}/98_databasefiles/manifest_control_paired"
 
 # Import principal
-log "Import QIIME2 principal"
+log "Import QIIME2 principal avec IDs uniques"
 conda run -n qiime2-2021.4 qiime tools import \
     --type 'SampleData[PairedEndSequencesWithQuality]' \
     --input-path "$MANIFEST_PAIRED" \
@@ -249,10 +290,13 @@ conda run -n qiime2-2021.4 qiime tools import \
     log "ERREUR import QIIME2 principal"
     log "Vérification du manifest:"
     head -5 "$MANIFEST_PAIRED"
+    
+    log "Vérification doublons dans manifest:"
+    cut -f1 "$MANIFEST_PAIRED" | sort | uniq -c | sort -nr
     exit 1
 }
 
-log "✓ Import QIIME2 principal réussi!"
+log "✅ Import QIIME2 principal réussi avec IDs uniques !"
 
 # Import contrôles si présents
 HAS_CONTROLS=false
@@ -272,7 +316,7 @@ log "DADA2 denoising - TEST CRITIQUE pour synchronisation"
 cd "${ROOTDIR}/05_QIIME2/core"
 
 # Tentative DADA2
-log "Lancement DADA2 avec fichiers paired synchronisés..."
+log "Lancement DADA2 avec fichiers paired synchronisés et IDs uniques..."
 conda run -n qiime2-2021.4 qiime dada2 denoise-paired \
     --i-demultiplexed-seqs demux_paired.qza \
     --o-table table.qza \
@@ -308,11 +352,11 @@ conda run -n qiime2-2021.4 qiime dada2 denoise-paired \
         log "ERREUR: Aucun fichier .fastq.gz trouvé dans l'export"
     fi
     
-    log "DADA2 échoué malgré synchronisation - vérifiez manuellement"
+    log "DADA2 échoué malgré synchronisation et IDs uniques - vérifiez manuellement"
     exit 1
 }
 
-log "🎉 DADA2 RÉUSSI ! Problème de synchronisation résolu !"
+log "🎉 DADA2 RÉUSSI ! Problèmes de synchronisation ET d'IDs dupliqués résolus !"
 log "✅ Le pipeline fonctionne maintenant correctement"
 
 # ---- 06 SUITE DU PIPELINE (optionnel pour test complet)
