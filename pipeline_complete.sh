@@ -9,7 +9,6 @@
 #SBATCH --error="/nvme/bio/data_fungi/valormicro_nc/00_scripts/valormicro.err"
 #SBATCH --output="/nvme/bio/data_fungi/valormicro_nc/00_scripts/valormicro.out"
 
-
 set -euo pipefail
 
 export ROOTDIR="/nvme/bio/data_fungi/valormicro_nc"
