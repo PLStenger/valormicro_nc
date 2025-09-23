@@ -12,22 +12,13 @@ log "Initialisation OK"
 
 # ---- Fix conda issues
 log "Correction des problèmes conda et Java"
-
-# Supprimer le token corrompu
 if [ -f "/home/fungi/.conda/aau_token_host" ]; then
     rm -f /home/fungi/.conda/aau_token_host || log "Token non supprimé"
 fi
 
-# Désactiver temporairement set -u pour éviter l'erreur JAVA_HOME
 set +u
-
-# Initialiser conda proprement
 source $(conda info --base)/etc/profile.d/conda.sh
-
-# Désactiver les messages JAVA_HOME si nécessaire
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/default-java}"
-
-# Réactiver set -u après l'initialisation conda
 set -u
 
 # ---- 00 Génération automatique des métadonnées
@@ -40,12 +31,9 @@ METADATA="${ROOTDIR}/98_databasefiles/sample-metadata.tsv"
 
 if [[ ! -f "$MANIFEST" ]] || [[ ! -f "$METADATA" ]]; then
     log "Fichiers metadata manquants - génération automatique"
-    
     if python3 -c "import pandas" 2>/dev/null; then
-        log "Utilisation du générateur Python"
         python3 "${ROOTDIR}/00_scripts/generate_qiime_files.py"
     else
-        log "Utilisation du générateur Bash (pandas non disponible)"
         bash "${ROOTDIR}/00_scripts/generate_metadata.sh"
     fi
 else
@@ -57,62 +45,32 @@ log "Lancement FastQC sur raw .fastq.gz"
 mkdir -p "${ROOTDIR}/02_qualitycheck"
 cd "${ROOTDIR}/01_raw_data"
 
-# Désactiver temporairement l'option -u pour l'activation conda
 set +u
-
-# Activation sécurisée de l'environnement fastqc
-log "Activation environnement fastqc"
 if conda activate fastqc 2>/dev/null; then
-    log "Environnement fastqc activé avec succès"
-elif conda env list | grep -q fastqc; then
-    log "Tentative d'activation directe avec conda run"
-    FASTQC_CMD="conda run -n fastqc fastqc"
+    FASTQC_CMD="fastqc"
 else
-    log "ERREUR: Environnement fastqc non trouvé"
-    exit 1
+    FASTQC_CMD="conda run -n fastqc fastqc"
 fi
-
-# Réactiver set -u
 set -u
 
-# Utiliser la commande appropriée pour fastqc
-if [ -z "${FASTQC_CMD:-}" ]; then
-    FASTQC_CMD="fastqc"
-fi
-
-# Traitement FastQC sans parallel pour éviter les conflits
-log "Traitement FastQC des fichiers raw"
 fastq_count=0
-for file in $(find . -name '*.fastq*' -type f | head -20); do  # Limiter pour test
+for file in $(find . -name '*.fastq*' -type f); do
     log "FastQC: $file"
-    $FASTQC_CMD "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 2>/dev/null || {
-        log "ERREUR FastQC sur $file - continuons"
-        continue
-    }
+    $FASTQC_CMD "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 || continue
     fastq_count=$((fastq_count + 1))
-    # Pause pour éviter la surcharge
-    if [ $((fastq_count % 5)) -eq 0 ]; then
-        log "Pause après $fastq_count fichiers"
-        sleep 2
-    fi
+    if [ $((fastq_count % 5)) -eq 0 ]; then sleep 2; fi
 done
 
-log "FastQC terminé - $fastq_count fichiers traités"
-
-# MultiQC
-log "MultiQC - résumé FastQC"
 set +u
 if conda activate multiqc 2>/dev/null; then
-    cd "${ROOTDIR}/02_qualitycheck"
-    multiqc . || log "ERREUR MultiQC"
+    cd "${ROOTDIR}/02_qualitycheck" && multiqc .
 else
-    cd "${ROOTDIR}/02_qualitycheck"
-    conda run -n multiqc multiqc . || log "ERREUR MultiQC"
+    cd "${ROOTDIR}/02_qualitycheck" && conda run -n multiqc multiqc .
 fi
 set -u
 
-# ---- 02 Trimmomatic
-log "Nettoyage avec Trimmomatic"
+# ---- 02 Trimmomatic avec gestion correcte des fichiers paired
+log "Nettoyage avec Trimmomatic - gestion des fichiers paired"
 ADAPTERS="${ROOTDIR}/99_softwares/adapters/sequences.fasta"
 mkdir -p "${ROOTDIR}/03_cleaned_data"
 cd "${ROOTDIR}/01_raw_data"
@@ -125,7 +83,7 @@ else
 fi
 set -u
 
-# Traitement séquentiel des paires
+# Traitement avec gestion correcte des outputs Trimmomatic
 pair_count=0
 find . -name '*R1*.fastq*' -type f | while read r1; do
     r2="${r1/_R1/_R2}"
@@ -135,27 +93,121 @@ find . -name '*R1*.fastq*' -type f | while read r1; do
         base1=$(basename "$r1")
         base2=$(basename "$r2")
         
-        out1p="${ROOTDIR}/03_cleaned_data/${base1/.fastq/_paired.fastq}"
-        out1u="${ROOTDIR}/03_cleaned_data/${base1/.fastq/_unpaired.fastq}"
-        out2p="${ROOTDIR}/03_cleaned_data/${base2/.fastq/_paired.fastq}"
-        out2u="${ROOTDIR}/03_cleaned_data/${base2/.fastq/_unpaired.fastq}"
+        # Noms de sortie Trimmomatic corrects
+        out1p="${ROOTDIR}/03_cleaned_data/${base1/.fastq.gz/_paired.fastq.gz}"
+        out1u="${ROOTDIR}/03_cleaned_data/${base1/.fastq.gz/_unpaired.fastq.gz}"
+        out2p="${ROOTDIR}/03_cleaned_data/${base2/.fastq.gz/_paired.fastq.gz}"
+        out2u="${ROOTDIR}/03_cleaned_data/${base2/.fastq.gz/_unpaired.fastq.gz}"
+        
+        # Gestion des .fastq sans .gz
+        out1p="${out1p/.fastq/_paired.fastq}"
+        out1u="${out1u/.fastq/_unpaired.fastq}"
+        out2p="${out2p/.fastq/_paired.fastq}"
+        out2u="${out2u/.fastq/_unpaired.fastq}"
         
         $TRIMMO_CMD PE -threads 4 -phred33 "$r1" "$r2" "$out1p" "$out1u" "$out2p" "$out2u" \
-            ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:2:30 MINLEN:150 || {
+            ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:20 MINLEN:150 || {
             log "ERREUR Trimmomatic sur $r1/$r2"
             continue
         }
         
-        # Pause périodique
-        if [ $((pair_count % 3)) -eq 0 ]; then
-            log "Pause après $pair_count paires"
-            sleep 5
+        # Vérification synchronisation des fichiers paired
+        log "Vérification synchronisation: $out1p et $out2p"
+        if command -v seqkit >/dev/null 2>&1; then
+            count1=$(seqkit stats "$out1p" | tail -n1 | awk '{print $4}')
+            count2=$(seqkit stats "$out2p" | tail -n1 | awk '{print $4}')
+        else
+            # Méthode alternative sans seqkit
+            count1=$(( $(zcat "$out1p" 2>/dev/null || cat "$out1p" | wc -l) / 4 ))
+            count2=$(( $(zcat "$out2p" 2>/dev/null || cat "$out2p" | wc -l) / 4 ))
         fi
+        
+        log "Counts: $out1p=$count1, $out2p=$count2"
+        
+        if [ "$count1" != "$count2" ]; then
+            log "ATTENTION: Fichiers désynchronisés détectés - tentative de correction"
+            # Utiliser fastq-pair si disponible pour resynchroniser
+            if command -v fastq_pair >/dev/null 2>&1; then
+                log "Resynchronisation avec fastq-pair"
+                fastq_pair "$out1p" "$out2p"
+                # Remplacer par les fichiers synchronisés
+                mv "${out1p}.paired.fq" "$out1p"
+                mv "${out2p}.paired.fq" "$out2p"
+                rm -f "${out1p}.single.fq" "${out2p}.single.fq"
+            fi
+        fi
+        
+        if [ $((pair_count % 3)) -eq 0 ]; then sleep 5; fi
     fi
 done
 
-# ---- FastQC sur données nettoyées
-log "FastQC + MultiQC sur reads nettoyés"
+# ---- Regeneration du manifest après Trimmomatic
+log "IMPORTANT: Régénération du manifest avec fichiers PAIRED uniquement"
+cd "${ROOTDIR}/00_scripts"
+
+# Script pour générer un nouveau manifest avec seulement les fichiers paired
+cat > regenerate_manifest_paired.py << 'EOF'
+#!/usr/bin/env python3
+import os
+import glob
+import pandas as pd
+
+rootdir = "/nvme/bio/data_fungi/valormicro_nc"
+cleaned_dir = f"{rootdir}/03_cleaned_data"
+output_dir = f"{rootdir}/98_databasefiles"
+
+# Trouver tous les fichiers paired
+paired_r1 = sorted(glob.glob(f"{cleaned_dir}/*R1*paired*"))
+paired_r2 = sorted(glob.glob(f"{cleaned_dir}/*R2*paired*"))
+
+manifest_data = []
+controls = []
+
+for r1_file in paired_r1:
+    # Extraire le nom d'échantillon
+    basename = os.path.basename(r1_file)
+    sample_id = basename.split('_')[0]  # Adapter selon votre nomenclature
+    
+    # Trouver le R2 correspondant
+    r2_file = r1_file.replace('R1', 'R2')
+    
+    if os.path.exists(r2_file):
+        # Vérifier si c'est un contrôle
+        if any(ctrl in sample_id.lower() for ctrl in ['neg', 'blank', 'control', 'ctrl']):
+            controls.append({
+                'sample-id': sample_id,
+                'forward-absolute-filepath': r1_file,
+                'reverse-absolute-filepath': r2_file
+            })
+        else:
+            manifest_data.append({
+                'sample-id': sample_id,
+                'forward-absolute-filepath': r1_file,
+                'reverse-absolute-filepath': r2_file
+            })
+
+# Sauvegarder les manifests
+if manifest_data:
+    manifest_df = pd.DataFrame(manifest_data)
+    manifest_df.to_csv(f"{output_dir}/manifest_paired", sep='\t', index=False)
+    print(f"Manifest principal généré avec {len(manifest_data)} échantillons")
+
+if controls:
+    controls_df = pd.DataFrame(controls)
+    controls_df.to_csv(f"{output_dir}/manifest_control_paired", sep='\t', index=False)
+    print(f"Manifest contrôles généré avec {len(controls)} échantillons")
+else:
+    print("Aucun contrôle détecté")
+EOF
+
+python3 regenerate_manifest_paired.py
+
+# Utiliser les nouveaux manifests
+MANIFEST="${ROOTDIR}/98_databasefiles/manifest_paired"
+MANIFEST_CONTROL="${ROOTDIR}/98_databasefiles/manifest_control_paired"
+
+# ---- 03 FastQC sur données paired uniquement
+log "FastQC sur données paired nettoyées"
 mkdir -p "${ROOTDIR}/04_qualitycheck"
 cd "${ROOTDIR}/03_cleaned_data"
 
@@ -167,34 +219,22 @@ else
 fi
 set -u
 
-log "FastQC sur données nettoyées"
-cleaned_count=0
-for file in $(find . -name '*.fastq*' -type f); do
-    log "FastQC nettoyé: $file"
-    $FASTQC_CMD "$file" -o "${ROOTDIR}/04_qualitycheck" --threads 2 || {
-        log "ERREUR FastQC sur $file nettoyé"
-        continue
-    }
-    cleaned_count=$((cleaned_count + 1))
-    
-    if [ $((cleaned_count % 8)) -eq 0 ]; then
-        log "Pause après $cleaned_count fichiers nettoyés"
-        sleep 3
-    fi
+# FastQC seulement sur fichiers paired
+for file in $(find . -name '*paired*.fastq*' -type f); do
+    log "FastQC paired: $file"
+    $FASTQC_CMD "$file" -o "${ROOTDIR}/04_qualitycheck" --threads 2 || continue
 done
 
 set +u
 if conda activate multiqc 2>/dev/null; then
-    cd "${ROOTDIR}/04_qualitycheck"
-    multiqc . || log "ERREUR MultiQC nettoyé"
+    cd "${ROOTDIR}/04_qualitycheck" && multiqc .
 else
-    cd "${ROOTDIR}/04_qualitycheck"
-    conda run -n multiqc multiqc . || log "ERREUR MultiQC nettoyé"
+    cd "${ROOTDIR}/04_qualitycheck" && conda run -n multiqc multiqc .
 fi
 set -u
 
-# ---- 03 QIIME2 Import
-log "Importation dans QIIME2"
+# ---- 04 QIIME2 Import avec vérification
+log "Importation QIIME2 avec fichiers paired synchronisés"
 mkdir -p "${ROOTDIR}/05_QIIME2/core" "${ROOTDIR}/05_QIIME2/visual"
 cd "${ROOTDIR}/05_QIIME2"
 
@@ -206,60 +246,69 @@ else
 fi
 set -u
 
-# Import principal
-log "Import échantillons principaux"
+# Vérification du manifest avant import
+log "Vérification du manifest paired"
+if [ ! -f "$MANIFEST" ]; then
+    log "ERREUR: Manifest paired non trouvé: $MANIFEST"
+    exit 1
+fi
+
+head -5 "$MANIFEST"
+
+# Import principal avec fichiers paired
+log "Import échantillons principaux (paired uniquement)"
 $QIIME_CMD qiime tools import \
     --type 'SampleData[PairedEndSequencesWithQuality]' \
     --input-path "$MANIFEST" \
-    --output-path "core/demux.qza" \
+    --output-path "core/demux_paired.qza" \
     --input-format PairedEndFastqManifestPhred33V2 || {
-    log "ERREUR import QIIME2"
+    log "ERREUR import QIIME2 paired"
     exit 1
 }
 
-# Contrôles si présents
+# Contrôles paired si présents
 HAS_CONTROLS=false
 if [ -f "$MANIFEST_CONTROL" ] && [ -s "$MANIFEST_CONTROL" ]; then
-    log "Import contrôles"
+    log "Import contrôles (paired uniquement)"
     $QIIME_CMD qiime tools import \
         --type 'SampleData[PairedEndSequencesWithQuality]' \
         --input-path "$MANIFEST_CONTROL" \
-        --output-path "core/demux_neg.qza" \
+        --output-path "core/demux_neg_paired.qza" \
         --input-format PairedEndFastqManifestPhred33V2 && HAS_CONTROLS=true || {
-        log "ERREUR import contrôles"
+        log "ERREUR import contrôles paired"
     }
 fi
 
-# ---- 04 DADA2
-log "DADA2 denoising"
+# ---- 05 DADA2 avec fichiers synchronisés
+log "DADA2 denoising avec fichiers paired synchronisés"
 cd "${ROOTDIR}/05_QIIME2/core"
 $QIIME_CMD qiime dada2 denoise-paired \
-    --i-demultiplexed-seqs demux.qza \
+    --i-demultiplexed-seqs demux_paired.qza \
     --o-table table.qza \
     --o-representative-sequences rep-seqs.qza \
     --o-denoising-stats denoising-stats.qza \
     --p-trunc-len-f 0 \
     --p-trunc-len-r 0 \
     --p-n-threads "$NTHREADS" || {
-    log "ERREUR DADA2"
+    log "ERREUR DADA2 - vérifier la synchronisation des fichiers"
+    
+    # Diagnostic en cas d'erreur
+    log "Diagnostic des fichiers imported"
+    $QIIME_CMD qiime tools export \
+        --input-path demux_paired.qza \
+        --output-path debug_export
+    
+    log "Comptage des reads dans les premiers fichiers exportés:"
+    cd debug_export
+    for f in $(ls *.fastq.gz | head -4); do
+        count=$(( $(zcat "$f" | wc -l) / 4 ))
+        echo "$f: $count reads"
+    done
+    
     exit 1
 }
 
-# Suite du pipeline DADA2 contrôles si nécessaire
-if [ "$HAS_CONTROLS" = true ]; then
-    log "DADA2 contrôles"
-    $QIIME_CMD qiime dada2 denoise-paired \
-        --i-demultiplexed-seqs demux_neg.qza \
-        --o-table table_neg.qza \
-        --o-representative-sequences rep-seqs_neg.qza \
-        --o-denoising-stats denoising-stats_neg.qza \
-        --p-trunc-len-f 0 \
-        --p-trunc-len-r 0 \
-        --p-n-threads "$NTHREADS" || log "ERREUR DADA2 contrôles"
-fi
-
-log "Étape FastQC et Trimmomatic terminées avec succès"
-log "DADA2 en cours - le pipeline continue..."
+log "DADA2 réussi avec fichiers paired synchronisés!"
 
 # ---- 05 Filtrage des contaminants (si contrôles présents)
 if [ "$HAS_CONTROLS" = true ]; then
