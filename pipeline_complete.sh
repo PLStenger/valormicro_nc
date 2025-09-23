@@ -9,7 +9,6 @@
 #SBATCH --output="/nvme/bio/data_fungi/valormicro_nc/00_scripts/valormicro.out"
 
 set -euo pipefail
-trap 'echo -e "\n[ERROR $(date +'%F %T')]\nCommand failed with exit code $?\n" >&2' ERR
 
 export ROOTDIR="/nvme/bio/data_fungi/valormicro_nc"
 export NTHREADS=16
