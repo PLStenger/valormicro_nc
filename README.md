@@ -11,7 +11,11 @@ First, open your terminal. Then, run these two command lines :
 ### Update the pipeline in local by :
 
     git pull
-    
+
+### Running the script with :
+
+    time nohup bash pipeline_complete.sh &> pipeline_complete.out
+   
 # VALORMICRO PIPELINE INSTALLATION - DIRECT COMMANDS
 
 # 1. Create and navigate to working directory
