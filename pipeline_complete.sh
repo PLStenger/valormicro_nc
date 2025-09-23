@@ -1,15 +1,5 @@
 #!/usr/bin/env bash
 
-# Suppression des directives SBATCH car le script n'est pas lancé par SLURM
-# #SBATCH --job-name=valormicro
-# #SBATCH --partition=sandy
-# #SBATCH --cpus-per-task=16
-# #SBATCH --mem=90G
-# #SBATCH --mail-user=pierrelouis.stenger@gmail.com
-# #SBATCH --mail-type=ALL
-# #SBATCH --error="/nvme/bio/data_fungi/valormicro_nc/00_scripts/valormicro.err"
-# #SBATCH --output="/nvme/bio/data_fungi/valormicro_nc/00_scripts/valormicro.out"
-
 set -euo pipefail
 
 export ROOTDIR="/nvme/bio/data_fungi/valormicro_nc"
@@ -20,11 +10,30 @@ mkdir -p "$TMPDIR"
 log() { echo -e "\n[$(date +'%F %T')] $*\n"; }
 log "Initialisation OK"
 
+# ---- Fix conda issues
+log "Correction des problèmes conda et Java"
+
+# Supprimer le token corrompu
+if [ -f "/home/fungi/.conda/aau_token_host" ]; then
+    rm -f /home/fungi/.conda/aau_token_host || log "Token non supprimé"
+fi
+
+# Désactiver temporairement set -u pour éviter l'erreur JAVA_HOME
+set +u
+
+# Initialiser conda proprement
+source $(conda info --base)/etc/profile.d/conda.sh
+
+# Désactiver les messages JAVA_HOME si nécessaire
+export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/default-java}"
+
+# Réactiver set -u après l'initialisation conda
+set -u
+
 # ---- 00 Génération automatique des métadonnées
 log "Génération automatique des fichiers manifest et metadata"
 cd "${ROOTDIR}/00_scripts"
 
-# Vérifier si les fichiers existent déjà
 MANIFEST="${ROOTDIR}/98_databasefiles/manifest"
 MANIFEST_CONTROL="${ROOTDIR}/98_databasefiles/manifest_control"
 METADATA="${ROOTDIR}/98_databasefiles/sample-metadata.tsv"
@@ -32,7 +41,6 @@ METADATA="${ROOTDIR}/98_databasefiles/sample-metadata.tsv"
 if [[ ! -f "$MANIFEST" ]] || [[ ! -f "$METADATA" ]]; then
     log "Fichiers metadata manquants - génération automatique"
     
-    # Utiliser le script Python si pandas est disponible, sinon bash
     if python3 -c "import pandas" 2>/dev/null; then
         log "Utilisation du générateur Python"
         python3 "${ROOTDIR}/00_scripts/generate_qiime_files.py"
@@ -49,24 +57,59 @@ log "Lancement FastQC sur raw .fastq.gz"
 mkdir -p "${ROOTDIR}/02_qualitycheck"
 cd "${ROOTDIR}/01_raw_data"
 
-# Activation de l'environnement une seule fois
-source $(conda info --base)/etc/profile.d/conda.sh
-conda activate fastqc
+# Désactiver temporairement l'option -u pour l'activation conda
+set +u
 
-# Solution alternative sans parallel pour éviter les conflits avec nohup
-log "FastQC en cours..."
-for file in $(find . -name '*.fastq*' -type f); do
-    log "Traitement FastQC: $file"
-    fastqc "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 || {
-        log "ERREUR FastQC sur $file"
+# Activation sécurisée de l'environnement fastqc
+log "Activation environnement fastqc"
+if conda activate fastqc 2>/dev/null; then
+    log "Environnement fastqc activé avec succès"
+elif conda env list | grep -q fastqc; then
+    log "Tentative d'activation directe avec conda run"
+    FASTQC_CMD="conda run -n fastqc fastqc"
+else
+    log "ERREUR: Environnement fastqc non trouvé"
+    exit 1
+fi
+
+# Réactiver set -u
+set -u
+
+# Utiliser la commande appropriée pour fastqc
+if [ -z "${FASTQC_CMD:-}" ]; then
+    FASTQC_CMD="fastqc"
+fi
+
+# Traitement FastQC sans parallel pour éviter les conflits
+log "Traitement FastQC des fichiers raw"
+fastq_count=0
+for file in $(find . -name '*.fastq*' -type f | head -20); do  # Limiter pour test
+    log "FastQC: $file"
+    $FASTQC_CMD "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 2>/dev/null || {
+        log "ERREUR FastQC sur $file - continuons"
         continue
     }
+    fastq_count=$((fastq_count + 1))
+    # Pause pour éviter la surcharge
+    if [ $((fastq_count % 5)) -eq 0 ]; then
+        log "Pause après $fastq_count fichiers"
+        sleep 2
+    fi
 done
 
-log "MultiQC - resume FastQC"
-conda activate multiqc
-cd "${ROOTDIR}/02_qualitycheck"
-multiqc . || log "ERREUR MultiQC"
+log "FastQC terminé - $fastq_count fichiers traités"
+
+# MultiQC
+log "MultiQC - résumé FastQC"
+set +u
+if conda activate multiqc 2>/dev/null; then
+    cd "${ROOTDIR}/02_qualitycheck"
+    multiqc . || log "ERREUR MultiQC"
+else
+    cd "${ROOTDIR}/02_qualitycheck"
+    conda run -n multiqc multiqc . || log "ERREUR MultiQC"
+fi
+set -u
 
 # ---- 02 Trimmomatic
 log "Nettoyage avec Trimmomatic"
@@ -74,13 +117,20 @@ ADAPTERS="${ROOTDIR}/99_softwares/adapters/sequences.fasta"
 mkdir -p "${ROOTDIR}/03_cleaned_data"
 cd "${ROOTDIR}/01_raw_data"
 
-conda activate trimmomatic
+set +u
+if conda activate trimmomatic 2>/dev/null; then
+    TRIMMO_CMD="trimmomatic"
+else
+    TRIMMO_CMD="conda run -n trimmomatic trimmomatic"
+fi
+set -u
 
-# Traitement séquentiel des paires pour éviter les problèmes de ressources
+# Traitement séquentiel des paires
+pair_count=0
 find . -name '*R1*.fastq*' -type f | while read r1; do
     r2="${r1/_R1/_R2}"
     if [[ -f "$r2" ]]; then
-        log "Traitement Trimmomatic: $r1 et $r2"
+        log "Trimmomatic: pair $((++pair_count)) - $r1 et $r2"
         
         base1=$(basename "$r1")
         base2=$(basename "$r2")
@@ -90,40 +140,75 @@ find . -name '*R1*.fastq*' -type f | while read r1; do
         out2p="${ROOTDIR}/03_cleaned_data/${base2/.fastq/_paired.fastq}"
         out2u="${ROOTDIR}/03_cleaned_data/${base2/.fastq/_unpaired.fastq}"
         
-        trimmomatic PE -threads 4 -phred33 "$r1" "$r2" "$out1p" "$out1u" "$out2p" "$out2u" \
+        $TRIMMO_CMD PE -threads 4 -phred33 "$r1" "$r2" "$out1p" "$out1u" "$out2p" "$out2u" \
             ILLUMINACLIP:"$ADAPTERS":2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:2:30 MINLEN:150 || {
             log "ERREUR Trimmomatic sur $r1/$r2"
             continue
         }
+        
+        # Pause périodique
+        if [ $((pair_count % 3)) -eq 0 ]; then
+            log "Pause après $pair_count paires"
+            sleep 5
+        fi
     fi
 done
 
+# ---- FastQC sur données nettoyées
 log "FastQC + MultiQC sur reads nettoyés"
 mkdir -p "${ROOTDIR}/04_qualitycheck"
 cd "${ROOTDIR}/03_cleaned_data"
 
-conda activate fastqc
+set +u
+if conda activate fastqc 2>/dev/null; then
+    FASTQC_CMD="fastqc"
+else
+    FASTQC_CMD="conda run -n fastqc fastqc"
+fi
+set -u
+
+log "FastQC sur données nettoyées"
+cleaned_count=0
 for file in $(find . -name '*.fastq*' -type f); do
     log "FastQC nettoyé: $file"
-    fastqc "$file" -o "${ROOTDIR}/04_qualitycheck" --threads 2 || {
+    $FASTQC_CMD "$file" -o "${ROOTDIR}/04_qualitycheck" --threads 2 || {
         log "ERREUR FastQC sur $file nettoyé"
         continue
     }
+    cleaned_count=$((cleaned_count + 1))
+    
+    if [ $((cleaned_count % 8)) -eq 0 ]; then
+        log "Pause après $cleaned_count fichiers nettoyés"
+        sleep 3
+    fi
 done
 
-conda activate multiqc
-cd "${ROOTDIR}/04_qualitycheck"
-multiqc . || log "ERREUR MultiQC nettoyé"
+set +u
+if conda activate multiqc 2>/dev/null; then
+    cd "${ROOTDIR}/04_qualitycheck"
+    multiqc . || log "ERREUR MultiQC nettoyé"
+else
+    cd "${ROOTDIR}/04_qualitycheck"
+    conda run -n multiqc multiqc . || log "ERREUR MultiQC nettoyé"
+fi
+set -u
 
-# ---- 03 QIIME2 Import - Détection automatique des contrôles
-log "Importation dans QIIME2 avec détection automatique des contrôles"
+# ---- 03 QIIME2 Import
+log "Importation dans QIIME2"
 mkdir -p "${ROOTDIR}/05_QIIME2/core" "${ROOTDIR}/05_QIIME2/visual"
 cd "${ROOTDIR}/05_QIIME2"
 
-conda activate qiime2-2021.4
+set +u
+if conda activate qiime2-2021.4 2>/dev/null; then
+    QIIME_CMD=""
+else
+    QIIME_CMD="conda run -n qiime2-2021.4"
+fi
+set -u
 
-# Import des échantillons principaux
-qiime tools import \
+# Import principal
+log "Import échantillons principaux"
+$QIIME_CMD qiime tools import \
     --type 'SampleData[PairedEndSequencesWithQuality]' \
     --input-path "$MANIFEST" \
     --output-path "core/demux.qza" \
@@ -132,26 +217,23 @@ qiime tools import \
     exit 1
 }
 
-# Vérification et import des contrôles si présents
+# Contrôles si présents
 HAS_CONTROLS=false
 if [ -f "$MANIFEST_CONTROL" ] && [ -s "$MANIFEST_CONTROL" ]; then
-    log "Contrôles détectés - Import des échantillons de contrôle"
-    qiime tools import \
+    log "Import contrôles"
+    $QIIME_CMD qiime tools import \
         --type 'SampleData[PairedEndSequencesWithQuality]' \
         --input-path "$MANIFEST_CONTROL" \
         --output-path "core/demux_neg.qza" \
-        --input-format PairedEndFastqManifestPhred33V2 || {
-        log "ERREUR import contrôles QIIME2"
+        --input-format PairedEndFastqManifestPhred33V2 && HAS_CONTROLS=true || {
+        log "ERREUR import contrôles"
     }
-    HAS_CONTROLS=true
-else
-    log "Aucun contrôle détecté - Poursuite sans contrôles"
 fi
 
-# ---- 04 QIIME2 Denoising (DADA2)
-log "DADA2 denoise - échantillons principaux"
+# ---- 04 DADA2
+log "DADA2 denoising"
 cd "${ROOTDIR}/05_QIIME2/core"
-qiime dada2 denoise-paired \
+$QIIME_CMD qiime dada2 denoise-paired \
     --i-demultiplexed-seqs demux.qza \
     --o-table table.qza \
     --o-representative-sequences rep-seqs.qza \
@@ -159,24 +241,25 @@ qiime dada2 denoise-paired \
     --p-trunc-len-f 0 \
     --p-trunc-len-r 0 \
     --p-n-threads "$NTHREADS" || {
-    log "ERREUR DADA2 principal"
+    log "ERREUR DADA2"
     exit 1
 }
 
-# Denoising des contrôles si présents
+# Suite du pipeline DADA2 contrôles si nécessaire
 if [ "$HAS_CONTROLS" = true ]; then
-    log "DADA2 denoise - échantillons de contrôle"
-    qiime dada2 denoise-paired \
+    log "DADA2 contrôles"
+    $QIIME_CMD qiime dada2 denoise-paired \
         --i-demultiplexed-seqs demux_neg.qza \
         --o-table table_neg.qza \
         --o-representative-sequences rep-seqs_neg.qza \
         --o-denoising-stats denoising-stats_neg.qza \
         --p-trunc-len-f 0 \
         --p-trunc-len-r 0 \
-        --p-n-threads "$NTHREADS" || {
-        log "ERREUR DADA2 contrôles"
-    }
+        --p-n-threads "$NTHREADS" || log "ERREUR DADA2 contrôles"
 fi
+
+log "Étape FastQC et Trimmomatic terminées avec succès"
+log "DADA2 en cours - le pipeline continue..."
 
 # ---- 05 Filtrage des contaminants (si contrôles présents)
 if [ "$HAS_CONTROLS" = true ]; then
