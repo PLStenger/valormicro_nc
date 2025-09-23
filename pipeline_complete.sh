@@ -48,6 +48,7 @@ log "Lancement FastQC sur raw .fastq.gz"
 mkdir -p "${ROOTDIR}/02_qualitycheck"
 cd "${ROOTDIR}/01_raw_data"
 find . -name '*.fastq*' -type f | parallel -j "$NTHREADS" "conda run -n fastqc fastqc {} -o ${ROOTDIR}/02_qualitycheck"
+wait
 
 log "MultiQC - resume FastQC"
 cd "${ROOTDIR}/02_qualitycheck"
@@ -87,6 +88,7 @@ find . -name '*R1*.fastq*' -type f | while read r1; do
         echo "$r1 $r2"
     fi
 done | parallel -j $(( NTHREADS / 4 )) --colsep ' ' process_pair {1} {2}
+wait
 
 log "FastQC + MultiQC sur reads nettoyés"
 mkdir -p "${ROOTDIR}/04_qualitycheck"
