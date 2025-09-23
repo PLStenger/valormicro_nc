@@ -11,11 +11,13 @@
 set -euo pipefail
 
 export ROOTDIR="/nvme/bio/data_fungi/valormicro_nc"
-export NTHREADS=36   # Utilise tous les CPUs alloués
+export NTHREADS=16    # ← adapté au nombre de CPUs alloués
 export TMPDIR="${ROOTDIR}/tmp"
 mkdir -p "$TMPDIR"
 
 log() { echo -e "\n[$(date +'%F %T')] $*\n"; }
+
+log "Initialisation OK"
 
 # ---- 00 Génération automatique des métadonnées
 log "Génération automatique des fichiers manifest et metadata"
