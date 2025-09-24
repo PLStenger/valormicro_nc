@@ -436,7 +436,7 @@ fi
 # ---- 07 TAXONOMIE
 log "Assignation taxonomique"
 conda run -n qiime2-2021.4 qiime feature-classifier classify-sklearn \
-    --i-classifier "${ROOTDIR}/98_databasefiles/silva-138-99-515-926-nb-classifier.qza" \
+    --i-classifier "${ROOTDIR}/98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza" \
     --i-reads rep-seqs.qza \
     --o-classification taxonomy.qza \
     --p-n-jobs "$NTHREADS" || {
@@ -452,8 +452,28 @@ cd "${ROOTDIR}/05_QIIME2/core"
 # Raréfaction et analyse core features
 log "Création table raréfiée et analyse core features"
 
-# D'abord, obtenir la profondeur de raréfaction (exemple avec 1000, ajustez selon vos données)
-RAREFACTION_DEPTH=1000  # À ajuster selon votre dataset
+# ---- DÉTERMINATION AUTOMATIQUE PROFONDEUR RARÉFACTION
+log "Détermination profondeur de raréfaction"
+
+# Créer summary de la table pour voir la distribution des reads
+conda run -n qiime2-2021.4 qiime feature-table summarize \
+    --i-table table.qza \
+    --o-visualization "../visual/table-summary.qzv"
+
+# Export du summary pour extraction automatique
+conda run -n qiime2-2021.4 qiime tools export \
+    --input-path "../visual/table-summary.qzv" \
+    --output-path "../visual/table-summary"
+
+# Extraction automatique de la profondeur recommandée
+if [ -f "../visual/table-summary/sample-frequency-detail.csv" ]; then
+    # Utiliser le 10ème percentile comme profondeur conservative
+    RAREFACTION_DEPTH=$(awk -F',' 'NR>1 {print $2}' "../visual/table-summary/sample-frequency-detail.csv" | sort -n | awk 'NR==int(NR*0.1)+1' || echo "5000")
+    log "Profondeur de raréfaction automatique: $RAREFACTION_DEPTH"
+else
+    RAREFACTION_DEPTH=5000  # Valeur par défaut conservative
+    log "Utilisation profondeur par défaut: $RAREFACTION_DEPTH"
+fi
 
 # Raréfaction de la table
 conda run -n qiime2-2021.4 qiime feature-table rarefy \
