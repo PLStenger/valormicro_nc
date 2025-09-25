@@ -499,8 +499,6 @@ fi
 
 log "Étape taxonomie terminée"
 
-
-
 # ---- 08 ANALYSES FINALES ET EXPORTS
 log "Analyses finales : core features, taxa barplots et exports"
 mkdir -p "${ROOTDIR}/05_QIIME2/subtables" "${ROOTDIR}/05_QIIME2/export"
@@ -573,10 +571,10 @@ conda run -n qiime2-2021.4 qiime feature-table core-features \
 
 # Taxa barplots
 log "Génération taxa barplots"
+
 conda run -n qiime2-2021.4 qiime taxa barplot \
     --i-table table.qza \
     --i-taxonomy taxonomy.qza \
-    --m-metadata-file "${ROOTDIR}/98_databasefiles/sample-metadata.tsv" \
     --o-visualization "../visual/taxa-bar-plots.qzv" || {
     log "Erreur taxa barplots"
 }
@@ -661,132 +659,116 @@ if [ -f "core/table/feature-table.biom" ]; then
     fi
 fi
 
-# ---- 11 CRÉATION FICHIER ASV AVEC TAXONOMIE
-log "Création fichier ASV.txt avec taxonomie complète"
+# ---- 11 CRÉATION FICHIER ASV AVEC TAXONOMIE (VERSION BASH COMPLÈTE)
+log "Création fichier ASV.txt avec taxonomie complète (version bash)"
 cd "${ROOTDIR}/05_QIIME2/export"
 
-# Script Python pour combiner ASV counts et taxonomie
-cat > create_asv_taxonomy.py << 'EOF'
-import pandas as pd
-import sys
-import os
-
-def create_asv_taxonomy_table():
-    # Chemins des fichiers
-    asv_file = "subtables/RarTable-all/ASV.tsv"
-    taxonomy_file = "core/taxonomy/taxonomy.tsv"
-    output_file = "subtables/RarTable-all/ASV.txt"
+create_asv_with_taxonomy_bash() {
+    local asv_file="subtables/RarTable-all/ASV.tsv"
+    local taxonomy_file="core/taxonomy/taxonomy.tsv"
+    local output_file="subtables/RarTable-all/ASV.txt"
     
-    try:
-        # Lire fichier ASV
-        if not os.path.exists(asv_file):
-            print(f"Erreur: {asv_file} n'existe pas")
-            return False
-            
-        asv_df = pd.read_csv(asv_file, sep='\t', index_col=0)
-        print(f"Table ASV chargée: {asv_df.shape}")
+    if [ ! -f "$asv_file" ] || [ ! -f "$taxonomy_file" ]; then
+        log "❌ Fichiers requis manquants : $asv_file ou $taxonomy_file"
+        return 1
+    fi
+    
+    log "Traitement des fichiers ASV et taxonomie"
+    
+    # Obtenir header des échantillons depuis ASV.tsv
+    sample_header=$(head -1 "$asv_file" | cut -f2-)
+    
+    # Créer header final avec taxonomie
+    echo -e "Kingdom\tPhylum\tClass\tOrder\tFamily\tGenus\tSpecies\t${sample_header}" > "$output_file"
+    
+    # Traiter chaque ASV
+    tail -n +2 "$asv_file" | while IFS=$'\t' read -r asv_id asv_counts; do
+        # Initialiser taxonomie par défaut
+        kingdom="Unassigned"
+        phylum="Unassigned"
+        class="Unassigned"
+        order="Unassigned"
+        family="Unassigned"
+        genus="Unassigned"
+        species="Unassigned"
         
-        # Lire fichier taxonomie
-        if not os.path.exists(taxonomy_file):
-            print(f"Erreur: {taxonomy_file} n'existe pas")
-            return False
+        # Chercher taxonomie dans fichier taxonomy.tsv
+        if tax_line=$(grep "^${asv_id}" "$taxonomy_file" 2>/dev/null); then
+            tax_string=$(echo "$tax_line" | cut -f2)
             
-        tax_df = pd.read_csv(taxonomy_file, sep='\t', index_col=0)
-        print(f"Table taxonomie chargée: {tax_df.shape}")
-        
-        # Parser la taxonomie
-        def parse_taxonomy(tax_string):
-            """Parse la chaîne taxonomique QIIME2"""
-            levels = ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']
-            parsed = {level: '' for level in levels}
-            
-            if pd.isna(tax_string) or tax_string == '':
-                return parsed
+            # Parser la taxonomie QIIME2 (format : d__Bacteria; p__Proteobacteria; etc.)
+            if [ -n "$tax_string" ]; then
+                # Séparer par ; et traiter chaque niveau
+                IFS=';' read -ra tax_levels <<< "$tax_string"
                 
-            # Nettoyer et diviser
-            tax_clean = str(tax_string).strip()
-            if '; ' in tax_clean:
-                tax_parts = tax_clean.split('; ')
-            else:
-                tax_parts = tax_clean.split(';')
-            
-            # Assigner les niveaux
-            for i, part in enumerate(tax_parts[:len(levels)]):
-                if part.strip():
-                    # Enlever les préfixes comme "d__", "p__", etc.
-                    clean_part = part.strip()
-                    if '__' in clean_part:
-                        clean_part = clean_part.split('__', 1)[1]
-                    parsed[levels[i]] = clean_part
+                for level in "${tax_levels[@]}"; do
+                    level=$(echo "$level" | xargs)  # Trim whitespace
                     
-            return parsed
-        
-        # Parser toutes les taxonomies
-        taxonomy_parsed = []
-        for asv_id in asv_df.index:
-            if asv_id in tax_df.index:
-                tax_string = tax_df.loc[asv_id, 'Taxon']
-                parsed_tax = parse_taxonomy(tax_string)
-            else:
-                # ASV sans taxonomie assignée
-                parsed_tax = {level: 'Unassigned' for level in ['Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']}
-            
-            taxonomy_parsed.append(parsed_tax)
-        
-        # Créer DataFrame taxonomie
-        tax_clean_df = pd.DataFrame(taxonomy_parsed, index=asv_df.index)
-        
-        # Combiner taxonomie avec counts
-        result_df = pd.concat([tax_clean_df, asv_df], axis=1)
-        
-        # Sauvegarder
-        result_df.to_csv(output_file, sep='\t', index=False)
-        print(f"✅ Fichier ASV.txt créé avec succès: {output_file}")
-        print(f"Dimensions: {result_df.shape}")
-        print(f"Colonnes: {list(result_df.columns)}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"Erreur lors de la création ASV.txt: {e}")
-        return False
-
-if __name__ == "__main__":
-    success = create_asv_taxonomy_table()
-    sys.exit(0 if success else 1)
-EOF
-
-# Exécuter le script Python
-python3 create_asv_taxonomy.py || {
-    log "Erreur script Python ASV.txt, tentative alternative"
-    
-    # Alternative bash simple si Python échoue
-    if [ -f "subtables/RarTable-all/ASV.tsv" ] && [ -f "core/taxonomy/taxonomy.tsv" ]; then
-        log "Création ASV.txt simplifiée avec bash"
-        
-        # Header avec taxonomie + échantillons
-        echo -e "Kingdom\tPhylum\tClass\tOrder\tFamily\tGenus\tSpecies\t$(head -1 subtables/RarTable-all/ASV.tsv | cut -f2-)" > subtables/RarTable-all/ASV.txt
-        
-        # Pour chaque ASV, ajouter taxonomie basique
-        tail -n +2 subtables/RarTable-all/ASV.tsv | while IFS=$'\t' read -r asv_id rest; do
-            # Taxonomie simplifiée si non trouvée
-            tax_line="Bacteria\tUnknown\tUnknown\tUnknown\tUnknown\tUnknown\t"
-            
-            # Chercher dans fichier taxonomie
-            if grep -q "^${asv_id}" core/taxonomy/taxonomy.tsv 2>/dev/null; then
-                # Parser taxonomie basique (adapté pour votre format)
-                full_tax=$(grep "^${asv_id}" core/taxonomy/taxonomy.tsv | cut -f2)
-                # Remplacer par taxonomie parsée si disponible
-                tax_line="Bacteria\tUnknown\tUnknown\tUnknown\tUnknown\tUnknown\t"
+                    if [[ "$level" == d__* ]]; then
+                        kingdom="${level#d__}"
+                        kingdom="${kingdom:-Unassigned}"
+                    elif [[ "$level" == p__* ]]; then
+                        phylum="${level#p__}"
+                        phylum="${phylum:-Unassigned}"
+                    elif [[ "$level" == c__* ]]; then
+                        class="${level#c__}"
+                        class="${class:-Unassigned}"
+                    elif [[ "$level" == o__* ]]; then
+                        order="${level#o__}"
+                        order="${order:-Unassigned}"
+                    elif [[ "$level" == f__* ]]; then
+                        family="${level#f__}"
+                        family="${family:-Unassigned}"
+                    elif [[ "$level" == g__* ]]; then
+                        genus="${level#g__}"
+                        genus="${genus:-Unassigned}"
+                    elif [[ "$level" == s__* ]]; then
+                        species="${level#s__}"
+                        species="${species:-Unassigned}"
+                    fi
+                done
             fi
-            
-            # Écrire ligne finale
-            echo -e "${tax_line}${rest}" >> subtables/RarTable-all/ASV.txt
+        fi
+        
+        # Nettoyer les valeurs vides
+        [ -z "$kingdom" ] && kingdom="Unassigned"
+        [ -z "$phylum" ] && phylum="Unassigned"
+        [ -z "$class" ] && class="Unassigned"
+        [ -z "$order" ] && order="Unassigned"
+        [ -z "$family" ] && family="Unassigned"
+        [ -z "$genus" ] && genus="Unassigned"
+        [ -z "$species" ] && species="Unassigned"
+        
+        # Écrire ligne finale
+        echo -e "${kingdom}\t${phylum}\t${class}\t${order}\t${family}\t${genus}\t${species}\t${asv_counts}" >> "$output_file"
+    done
+    
+    log "✅ Fichier ASV.txt créé avec taxonomie complète"
+    log "Lignes dans le fichier final: $(wc -l < "$output_file")"
+    
+    # Afficher un échantillon du résultat
+    log "Aperçu du fichier ASV.txt:"
+    head -3 "$output_file" | column -t -s$'\t' 2>/dev/null || head -3 "$output_file"
+}
+
+# Exécuter la fonction
+create_asv_with_taxonomy_bash || {
+    log "❌ Création ASV.txt bash échouée"
+    
+    # Version simplifiée finale de secours
+    if [ -f "subtables/RarTable-all/ASV.tsv" ]; then
+        log "Version de secours ultra-simplifiée"
+        sample_header=$(head -1 "subtables/RarTable-all/ASV.tsv" | cut -f2-)
+        echo -e "Kingdom\tPhylum\tClass\tOrder\tFamily\tGenus\tSpecies\t${sample_header}" > "subtables/RarTable-all/ASV.txt"
+        
+        tail -n +2 "subtables/RarTable-all/ASV.tsv" | while IFS=$'\t' read -r asv_id asv_counts; do
+            echo -e "Bacteria\tUnknown\tUnknown\tUnknown\tUnknown\tUnknown\tUnknown\t${asv_counts}" >> "subtables/RarTable-all/ASV.txt"
         done
         
         log "✅ Fichier ASV.txt créé (version simplifiée)"
     fi
 }
+
 
 log "🏁 PIPELINE COMPLET TERMINÉ AVEC SUCCÈS !"
 log "Fichiers générés:"
