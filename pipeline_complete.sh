@@ -510,14 +510,17 @@ cd "${ROOTDIR}/05_QIIME2/core"
 # Raréfaction et analyse core features
 log "Création table raréfiée et analyse core features"
 
-# ---- DÉTERMINATION AUTOMATIQUE PROFONDEUR RARÉFACTION
+# ---- DÉTERMINATION PROFONDEUR RARÉFACTION (SANS MÉTADONNÉES)
 log "Détermination profondeur de raréfaction"
 
-# Summary de la table pour diagnostic
+# Summary de la table SANS métadonnées pour éviter l'erreur
+log "Summary sans métadonnées pour éviter conflits d'IDs"
 conda run -n qiime2-2021.4 qiime feature-table summarize \
     --i-table table.qza \
-    --o-visualization "../visual/table-summary.qzv" \
-    --m-sample-metadata-file "${ROOTDIR}/98_databasefiles/sample-metadata.tsv"
+    --o-visualization "../visual/table-summary.qzv" || {
+    log "Erreur summary table"
+    exit 1
+}
 
 # Export du summary pour extraction automatique
 conda run -n qiime2-2021.4 qiime tools export \
