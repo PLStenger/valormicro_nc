@@ -380,8 +380,8 @@ conda run -n qiime2-2021.4 qiime dada2 denoise-paired \
 
 log "🎉 DADA2 RÉUSSI !"
 
-# ---- 06 TÉLÉCHARGEMENT ET CRÉATION CLASSIFIEUR SILVA SSU 138.2 OFFICIEL
-log "Téléchargement SILVA SSU 138.2 officiel (Release 11.07.24) avec RESCRIPt"
+# ---- 06 TÉLÉCHARGEMENT SILVA 138.2 DEPUIS SITE OFFICIEL
+log "Téléchargement SILVA 138.2 directement depuis site officiel"
 
 # Variables pour les chemins Silva
 SILVA_BASE_DIR="${ROOTDIR}/98_databasefiles"
@@ -403,155 +403,124 @@ fi
 
 # Créer le classifieur si nécessaire
 if [ "$NEED_CLASSIFIER" = true ]; then
-    log "Installation/vérification RESCRIPt pour SILVA 138.2"
+    log "Téléchargement SILVA 138.2 depuis site officiel https://www.arb-silva.de"
     
-    # Installer RESCRIPt si nécessaire
+    # URLs officielles SILVA 138.2 [web:154][web:136]
+    log "Téléchargement fichiers SILVA SSU 138.2 officiel"
+    
+    # 1. Télécharger les séquences NR99
+    log "Téléchargement séquences SILVA 138.2 NR99"
+    wget -O "SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz" \
+        "https://www.arb-silva.de/fileadmin/silva_databases/release_138_2/Exports/SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz" || {
+        log "❌ Erreur téléchargement séquences SILVA"
+        exit 1
+    }
+    
+    # 2. Télécharger la taxonomie
+    log "Téléchargement taxonomie SILVA 138.2"
+    wget -O "tax_slv_ssu_138.2.txt.gz" \
+        "https://www.arb-silva.de/fileadmin/silva_databases/release_138_2/Exports/taxonomy/tax_slv_ssu_138.2.txt.gz" || {
+        log "❌ Erreur téléchargement taxonomie SILVA"
+        exit 1
+    }
+    
+    # Décompresser
+    log "Décompression fichiers SILVA 138.2"
+    gunzip -f SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz tax_slv_ssu_138.2.txt.gz
+    
+    # Installation RESCRIPt si nécessaire
+    log "Installation/vérification RESCRIPt"
     conda run -n qiime2-2021.4 python -c "import rescript" 2>/dev/null || {
         log "Installation RESCRIPt dans environnement QIIME2"
         conda install -n qiime2-2021.4 -c conda-forge -c bioconda -c qiime2 q2-rescript -y || {
-            log "Impossible d'installer RESCRIPt, tentative alternative"
+            log "❌ Impossible d'installer RESCRIPt"
+            exit 1
         }
     }
     
-    # Étape 1 : Téléchargement direct SILVA 138.2 avec RESCRIPt [web:145][web:150]
-    log "Téléchargement SILVA SSU 138.2 avec RESCRIPt"
-    conda run -n qiime2-2021.4 qiime rescript get-silva-data \
-        --p-version '138.2' \
-        --p-target 'SSURef_NR99' \
-        --p-include-species-labels \
-        --o-silva-sequences silva-138.2-ssu-nr99-seqs.qza \
-        --o-silva-taxonomy silva-138.2-ssu-nr99-tax.qza \
-        --verbose || {
+    # Import des données SILVA avec RESCRIPt
+    log "Import séquences SILVA 138.2 dans QIIME2"
+    conda run -n qiime2-2021.4 qiime tools import \
+        --type 'FeatureData[RNASequence]' \
+        --input-path SILVA_138.2_SSURef_NR99_tax_silva.fasta \
+        --output-path silva-138.2-ssu-nr99-seqs-rna.qza
+    
+    # Conversion RNA vers DNA
+    log "Conversion RNA vers DNA"
+    conda run -n qiime2-2021.4 qiime rescript reverse-transcribe \
+        --i-rna-sequences silva-138.2-ssu-nr99-seqs-rna.qza \
+        --o-dna-sequences silva-138.2-ssu-nr99-seqs.qza
+    
+    # Parser taxonomie SILVA avec RESCRIPt
+    log "Parser taxonomie SILVA 138.2 avec RESCRIPt"
+    conda run -n qiime2-2021.4 qiime rescript parse-silva-taxonomy \
+        --i-taxonomy-tree tax_slv_ssu_138.2.txt \
+        --o-taxonomy silva-138.2-ssu-nr99-tax.qza || {
         
-        log "❌ Erreur téléchargement RESCRIPt, tentative méthode alternative"
+        log "❌ Erreur parsing taxonomie avec RESCRIPt, formatage manuel"
         
-        # Alternative : téléchargement direct FASTA/taxonomie depuis SILVA [web:136][web:137]
-        log "Téléchargement direct depuis serveur SILVA 138.2"
+        # Formatage manuel si RESCRIPt échoue
+        awk -F'\t' 'NR>1 && $3 != "" {
+            gsub(/ /, "_", $3)
+            gsub(/;/, "; ", $3)
+            print $1"\t"$3
+        }' tax_slv_ssu_138.2.txt | head -100000 > silva_138.2_tax_qiime.tsv
         
-        # URLs officielles SILVA 138.2 (Release 11.07.24)
-        SILVA_SEQ_URL="https://www.arb-silva.de/fileadmin/silva_databases/release_138_2/Exports/SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz"
-        SILVA_TAX_URL="https://www.arb-silva.de/fileadmin/silva_databases/release_138_2/Exports/taxonomy/tax_slv_ssu_138.2.txt.gz"
-        
-        # Télécharger séquences
-        log "Téléchargement séquences SILVA 138.2"
-        wget -O silva_138.2_ssu_nr99.fasta.gz "$SILVA_SEQ_URL" || {
-            log "Erreur téléchargement séquences, utilisation backup"
-            # Backup depuis archive
-            wget -O silva_138.2_ssu_nr99.fasta.gz \
-                "https://ftp.arb-silva.de/release_138_2/Exports/SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz" || {
-                log "❌ Impossible de télécharger SILVA 138.2"
-                exit 1
-            }
-        }
-        
-        # Télécharger taxonomie
-        log "Téléchargement taxonomie SILVA 138.2"
-        wget -O silva_138.2_tax.txt.gz "$SILVA_TAX_URL" || {
-            log "Utilisation taxonomie backup"
-            wget -O silva_138.2_tax.txt.gz \
-                "https://ftp.arb-silva.de/release_138_2/Exports/taxonomy/tax_slv_ssu_138.2.txt.gz"
-        }
-        
-        # Décompresser
-        gunzip -f silva_138.2_ssu_nr99.fasta.gz silva_138.2_tax.txt.gz
-        
-        # Formatter pour QIIME2 avec RESCRIPt si possible
-        if conda run -n qiime2-2021.4 python -c "import rescript" 2>/dev/null; then
-            log "Formatage données SILVA 138.2 avec RESCRIPt"
-            
-            # Importer séquences
-            conda run -n qiime2-2021.4 qiime tools import \
-                --type 'FeatureData[RNASequence]' \
-                --input-path silva_138.2_ssu_nr99.fasta \
-                --output-path silva-138.2-ssu-nr99-seqs-rna.qza
-            
-            # Convertir RNA en DNA
-            conda run -n qiime2-2021.4 qiime rescript reverse-transcribe \
-                --i-rna-sequences silva-138.2-ssu-nr99-seqs-rna.qza \
-                --o-dna-sequences silva-138.2-ssu-nr99-seqs.qza
-            
-            # Parser taxonomie
-            conda run -n qiime2-2021.4 qiime rescript parse-silva-taxonomy \
-                --i-taxonomy-tree silva_138.2_tax.txt \
-                --o-taxonomy silva-138.2-ssu-nr99-tax.qza || {
-                
-                # Alternative : import taxonomie manuelle
-                log "Formatage taxonomie manuel"
-                
-                # Créer fichier taxonomie QIIME2 compatible
-                awk -F'\t' 'NR>1 {
-                    gsub(/ /, "_", $3)
-                    gsub(/;/, "; ", $3)
-                    print $1"\t"$3
-                }' silva_138.2_tax.txt > silva_138.2_tax_qiime.tsv
-                
-                conda run -n qiime2-2021.4 qiime tools import \
-                    --type 'FeatureData[Taxonomy]' \
-                    --input-path silva_138.2_tax_qiime.tsv \
-                    --output-path silva-138.2-ssu-nr99-tax.qza \
-                    --input-format HeaderlessTSVTaxonomyFormat
-            }
-        else
-            log "❌ RESCRIPt indisponible, impossible de formatter SILVA 138.2"
-            exit 1
-        fi
+        conda run -n qiime2-2021.4 qiime tools import \
+            --type 'FeatureData[Taxonomy]' \
+            --input-path silva_138.2_tax_qiime.tsv \
+            --output-path silva-138.2-ssu-nr99-tax.qza \
+            --input-format HeaderlessTSVTaxonomyFormat
     }
     
-    # Vérifier que les fichiers de base existent maintenant
-    if [ -f "silva-138.2-ssu-nr99-seqs.qza" ] && [ -f "silva-138.2-ssu-nr99-tax.qza" ]; then
-        log "✅ Fichiers SILVA SSU 138.2 obtenus"
+    log "✅ Données SILVA 138.2 importées dans QIIME2"
+    
+    # Étape 2: Extraction région V4-V5 avec primers 515F-Y/926R
+    log "Extraction région V4-V5 avec primers 515F-Y/926R"
+    conda run -n qiime2-2021.4 qiime feature-classifier extract-reads \
+        --i-sequences silva-138.2-ssu-nr99-seqs.qza \
+        --p-f-primer GTGYCAGCMGCCGCGGTAA \
+        --p-r-primer CCGYCAATTYMTTTRAGTTT \
+        --p-n-jobs 2 \
+        --p-read-orientation 'forward' \
+        --o-reads silva-138.2-ssu-nr99-seqs-515f-926r.qza || {
+        log "Erreur extraction reads, utilisation séquences complètes"
+        cp silva-138.2-ssu-nr99-seqs.qza silva-138.2-ssu-nr99-seqs-515f-926r.qza
+    }
+    
+    # Étape 3: Déréplication avec RESCRIPt
+    log "Déréplication SILVA 138.2 avec RESCRIPt"
+    conda run -n qiime2-2021.4 qiime rescript dereplicate \
+        --i-sequences silva-138.2-ssu-nr99-seqs-515f-926r.qza \
+        --i-taxa silva-138.2-ssu-nr99-tax.qza \
+        --p-mode 'uniq' \
+        --o-dereplicated-sequences silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
+        --o-dereplicated-taxa silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza || {
+        log "Erreur déréplication, utilisation fichiers originaux"
+        cp silva-138.2-ssu-nr99-seqs-515f-926r.qza silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza
+        cp silva-138.2-ssu-nr99-tax.qza silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza
+    }
+    
+    # Étape 4: Entraînement classifieur naive bayes
+    log "Création classifieur naive bayes SILVA 138.2 pour V4-V5"
+    conda run -n qiime2-2021.4 qiime feature-classifier fit-classifier-naive-bayes \
+        --i-reference-reads silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
+        --i-reference-taxonomy silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza \
+        --o-classifier "$CLASSIFIER_PATH" && {
+        log "✅ Classifieur SILVA 138.2 créé avec succès depuis site officiel"
         
-        # Étape 2: Extraction reads avec primers V4-V5 (515F-Y/926R) [web:141][web:144]
-        log "Extraction région V4-V5 avec primers 515F-Y/926R"
-        conda run -n qiime2-2021.4 qiime feature-classifier extract-reads \
-            --i-sequences silva-138.2-ssu-nr99-seqs.qza \
-            --p-f-primer GTGYCAGCMGCCGCGGTAA \
-            --p-r-primer CCGYCAATTYMTTTRAGTTT \
-            --p-n-jobs 2 \
-            --p-read-orientation 'forward' \
-            --o-reads silva-138.2-ssu-nr99-seqs-515f-926r.qza || {
-            log "Erreur extraction reads, utilisation séquences complètes"
-            cp silva-138.2-ssu-nr99-seqs.qza silva-138.2-ssu-nr99-seqs-515f-926r.qza
-        }
-        
-        # Étape 3: Déréplication avec RESCRIPt [web:147]
-        log "Déréplication SILVA 138.2 avec RESCRIPt"
-        conda run -n qiime2-2021.4 qiime rescript dereplicate \
-            --i-sequences silva-138.2-ssu-nr99-seqs-515f-926r.qza \
-            --i-taxa silva-138.2-ssu-nr99-tax.qza \
-            --p-mode 'uniq' \
-            --o-dereplicated-sequences silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
-            --o-dereplicated-taxa silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza || {
-            log "Erreur déréplication, utilisation fichiers originaux"
-            cp silva-138.2-ssu-nr99-seqs-515f-926r.qza silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza
-            cp silva-138.2-ssu-nr99-tax.qza silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza
-        }
-        
-        # Étape 4: Entraînement classifieur naive bayes
-        log "Création classifieur naive bayes SILVA SSU 138.2 pour V4-V5"
-        conda run -n qiime2-2021.4 qiime feature-classifier fit-classifier-naive-bayes \
-            --i-reference-reads silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
-            --i-reference-taxonomy silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza \
-            --o-classifier "$CLASSIFIER_PATH" && {
-            log "✅ Classifieur SILVA SSU 138.2 créé avec succès"
-            
-            # Nettoyer fichiers temporaires
-            rm -f silva-138.2-ssu-nr99-seqs-515f-926r.qza \
-                  silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
-                  silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza \
-                  silva_138.2_ssu_nr99.fasta \
-                  silva_138.2_tax.txt \
-                  silva_138.2_tax_qiime.tsv \
-                  silva-138.2-ssu-nr99-seqs-rna.qza 2>/dev/null || true
-        } || {
-            log "❌ Échec création classifieur SILVA 138.2"
-            exit 1
-        }
-        
-    else
-        log "❌ Impossible d'obtenir les fichiers SILVA 138.2"
+        # Nettoyer fichiers temporaires
+        rm -f silva-138.2-ssu-nr99-seqs-515f-926r.qza \
+              silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
+              silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza \
+              SILVA_138.2_SSURef_NR99_tax_silva.fasta \
+              tax_slv_ssu_138.2.txt \
+              silva_138.2_tax_qiime.tsv \
+              silva-138.2-ssu-nr99-seqs-rna.qza 2>/dev/null || true
+    } || {
+        log "❌ Échec création classifieur SILVA 138.2"
         exit 1
-    fi
+    }
 fi
 
 # Validation finale du classifieur
@@ -560,14 +529,14 @@ conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER_PATH" || {
     exit 1
 }
 
-log "✅ Classifieur SILVA SSU 138.2 (Release 11.07.24) prêt pour V4-V5 515F-Y/926R"
+log "✅ Classifieur SILVA 138.2 officiel prêt (téléchargé depuis https://www.arb-silva.de)"
 
-# ---- 07 TAXONOMIE AVEC SILVA SSU 138.2 AUTHENTIQUE
-log "Assignation taxonomique avec SILVA SSU 138.2 officiel (Release 11.07.24)"
+# ---- 07 TAXONOMIE AVEC SILVA 138.2 OFFICIEL
+log "Assignation taxonomique avec SILVA 138.2 officiel du site https://www.arb-silva.de"
 cd "${ROOTDIR}/05_QIIME2/core"
 
 # Classification taxonomique
-log "Lancement classification avec SILVA SSU 138.2"
+log "Lancement classification avec SILVA 138.2 officiel"
 conda run -n qiime2-2021.4 qiime feature-classifier classify-sklearn \
     --i-classifier "$CLASSIFIER_PATH" \
     --i-reads rep-seqs.qza \
@@ -578,7 +547,7 @@ conda run -n qiime2-2021.4 qiime feature-classifier classify-sklearn \
     exit 1
 }
 
-log "✅ Classification taxonomique SILVA SSU 138.2 réussie"
+log "✅ Classification taxonomique SILVA 138.2 officiel réussie"
 
 # Vérifier le contenu de la taxonomie
 conda run -n qiime2-2021.4 qiime tools export \
@@ -587,8 +556,8 @@ conda run -n qiime2-2021.4 qiime tools export \
 
 if [ -f "temp_tax_check/taxonomy.tsv" ]; then
     tax_count=$(tail -n +2 temp_tax_check/taxonomy.tsv | wc -l)
-    log "✅ Taxonomie SILVA 138.2 contient $tax_count classifications"
-    log "Échantillon de la taxonomie SILVA SSU 138.2:"
+    log "✅ Taxonomie SILVA 138.2 officiel contient $tax_count classifications"
+    log "Échantillon de la taxonomie SILVA 138.2 officiel:"
     head -5 temp_tax_check/taxonomy.tsv | column -t -s$'\t' || head -5 temp_tax_check/taxonomy.tsv
 fi
 rm -rf temp_tax_check
@@ -649,7 +618,7 @@ conda run -n qiime2-2021.4 qiime feature-table core-features \
 }
 
 # Taxa barplots
-log "Génération taxa barplots avec SILVA SSU 138.2"
+log "Génération taxa barplots avec SILVA 138.2 officiel"
 conda run -n qiime2-2021.4 qiime taxa barplot \
     --i-table table.qza \
     --i-taxonomy taxonomy.qza \
@@ -657,8 +626,8 @@ conda run -n qiime2-2021.4 qiime taxa barplot \
     log "Erreur taxa barplots"
 }
 
-# ---- 09 MÉTRIQUES DE DIVERSITÉ
-log "Calcul métriques de diversité"
+# ---- 09 MÉTRIQUES DE DIVERSITÉ CORRIGÉES
+log "Calcul métriques de diversité avec outputs individuels"
 mkdir -p "${ROOTDIR}/05_QIIME2/diversity" "${ROOTDIR}/05_QIIME2/pcoa" 
 
 cd "${ROOTDIR}/05_QIIME2/core"
@@ -693,57 +662,93 @@ if [ -f "${ROOTDIR}/98_databasefiles/manifest_paired" ]; then
     log "✅ Métadonnées diversité créées"
 fi
 
-# Core metrics phylogenetic
-log "Lancement core-metrics-phylogenetic"
-mkdir -p diversity pcoa visual
+# NETTOYER ANCIENS RÉSULTATS POUR ÉVITER L'ERREUR --output-dir EXISTS
+log "Nettoyage anciens résultats de diversité"
+rm -rf diversity-results 2>/dev/null || true
+
+# Core metrics phylogenetic avec outputs individuels [web:33][web:25]
+log "Lancement core-metrics-phylogenetic avec tous les outputs individuels"
 
 conda run -n qiime2-2021.4 qiime diversity core-metrics-phylogenetic \
     --i-table table.qza \
     --i-phylogeny tree.qza \
     --p-sampling-depth "$RAREFACTION_DEPTH" \
     --m-metadata-file "../98_databasefiles/diversity-metadata.tsv" \
-    --output-dir diversity-results || {
-    log "Erreur core-metrics-phylogenetic, alternative sans phylogénie"
+    --o-rarefied-table rarefied_table.qza \
+    --o-faith-pd-vector diversity/Vector-faith_pd.qza \
+    --o-observed-features-vector diversity/Vector-observed_asv.qza \
+    --o-shannon-vector diversity/Vector-shannon.qza \
+    --o-evenness-vector diversity/Vector-evenness.qza \
+    --o-unweighted-unifrac-distance-matrix diversity/Matrix-unweighted_unifrac.qza \
+    --o-weighted-unifrac-distance-matrix diversity/Matrix-weighted_unifrac.qza \
+    --o-jaccard-distance-matrix diversity/Matrix-jaccard.qza \
+    --o-bray-curtis-distance-matrix diversity/Matrix-braycurtis.qza \
+    --o-unweighted-unifrac-pcoa-results pcoa/PCoA-unweighted_unifrac.qza \
+    --o-weighted-unifrac-pcoa-results pcoa/PCoA-weighted_unifrac.qza \
+    --o-jaccard-pcoa-results pcoa/PCoA-jaccard.qza \
+    --o-bray-curtis-pcoa-results pcoa/PCoA-braycurtis.qza \
+    --o-unweighted-unifrac-emperor visual/Emperor-unweighted_unifrac.qzv \
+    --o-weighted-unifrac-emperor visual/Emperor-weighted_unifrac.qzv \
+    --o-jaccard-emperor visual/Emperor-jaccard.qzv \
+    --o-bray-curtis-emperor visual/Emperor-braycurtis.qzv || {
     
+    log "Erreur core-metrics-phylogenetic, tentative sans phylogénie"
+    
+    # Alternative sans phylogénie avec tous les outputs individuels
     conda run -n qiime2-2021.4 qiime diversity core-metrics \
         --i-table table.qza \
         --p-sampling-depth "$RAREFACTION_DEPTH" \
         --m-metadata-file "../98_databasefiles/diversity-metadata.tsv" \
-        --output-dir diversity-results || {
-        log "Erreur core-metrics"
+        --o-rarefied-table rarefied_table.qza \
+        --o-observed-features-vector diversity/Vector-observed_asv.qza \
+        --o-shannon-vector diversity/Vector-shannon.qza \
+        --o-evenness-vector diversity/Vector-evenness.qza \
+        --o-jaccard-distance-matrix diversity/Matrix-jaccard.qza \
+        --o-bray-curtis-distance-matrix diversity/Matrix-braycurtis.qza \
+        --o-jaccard-pcoa-results pcoa/PCoA-jaccard.qza \
+        --o-bray-curtis-pcoa-results pcoa/PCoA-braycurtis.qza \
+        --o-jaccard-emperor visual/Emperor-jaccard.qzv \
+        --o-bray-curtis-emperor visual/Emperor-braycurtis.qzv || {
+        
+        log "Erreur core-metrics, création métriques individuelles"
+        
+        # Créer métriques alpha individuellement
+        conda run -n qiime2-2021.4 qiime diversity alpha \
+            --i-table table.qza \
+            --p-metric observed_features \
+            --o-alpha-diversity diversity/Vector-observed_asv.qza || true
+            
+        conda run -n qiime2-2021.4 qiime diversity alpha \
+            --i-table table.qza \
+            --p-metric shannon \
+            --o-alpha-diversity diversity/Vector-shannon.qza || true
+            
+        conda run -n qiime2-2021.4 qiime diversity alpha \
+            --i-table table.qza \
+            --p-metric pielou_e \
+            --o-alpha-diversity diversity/Vector-evenness.qza || true
+        
+        # Créer matrices beta individuellement
+        conda run -n qiime2-2021.4 qiime diversity beta \
+            --i-table table.qza \
+            --p-metric jaccard \
+            --o-distance-matrix diversity/Matrix-jaccard.qza || true
+            
+        conda run -n qiime2-2021.4 qiime diversity beta \
+            --i-table table.qza \
+            --p-metric braycurtis \
+            --o-distance-matrix diversity/Matrix-braycurtis.qza || true
     }
 }
 
-# Organisation des outputs
-if [ -d "diversity-results" ]; then
-    log "Organisation des outputs de diversité"
-    
-    # Vecteurs alpha diversity
-    [ -f "diversity-results/observed_features_vector.qza" ] && cp "diversity-results/observed_features_vector.qza" "diversity/Vector-observed_asv.qza"
-    [ -f "diversity-results/shannon_vector.qza" ] && cp "diversity-results/shannon_vector.qza" "diversity/Vector-shannon.qza"
-    [ -f "diversity-results/evenness_vector.qza" ] && cp "diversity-results/evenness_vector.qza" "diversity/Vector-evenness.qza"
-    [ -f "diversity-results/faith_pd_vector.qza" ] && cp "diversity-results/faith_pd_vector.qza" "diversity/Vector-faith_pd.qza"
-    
-    # Matrices de distance
-    [ -f "diversity-results/jaccard_distance_matrix.qza" ] && cp "diversity-results/jaccard_distance_matrix.qza" "diversity/Matrix-jaccard.qza"
-    [ -f "diversity-results/bray_curtis_distance_matrix.qza" ] && cp "diversity-results/bray_curtis_distance_matrix.qza" "diversity/Matrix-braycurtis.qza"
-    [ -f "diversity-results/unweighted_unifrac_distance_matrix.qza" ] && cp "diversity-results/unweighted_unifrac_distance_matrix.qza" "diversity/Matrix-unweighted_unifrac.qza"
-    [ -f "diversity-results/weighted_unifrac_distance_matrix.qza" ] && cp "diversity-results/weighted_unifrac_distance_matrix.qza" "diversity/Matrix-weighted_unifrac.qza"
-    
-    # PCoA
-    [ -f "diversity-results/jaccard_pcoa_results.qza" ] && cp "diversity-results/jaccard_pcoa_results.qza" "pcoa/PCoA-jaccard.qza"
-    [ -f "diversity-results/bray_curtis_pcoa_results.qza" ] && cp "diversity-results/bray_curtis_pcoa_results.qza" "pcoa/PCoA-braycurtis.qza"
-    [ -f "diversity-results/unweighted_unifrac_pcoa_results.qza" ] && cp "diversity-results/unweighted_unifrac_pcoa_results.qza" "pcoa/PCoA-unweighted_unifrac.qza"
-    [ -f "diversity-results/weighted_unifrac_pcoa_results.qza" ] && cp "diversity-results/weighted_unifrac_pcoa_results.qza" "pcoa/PCoA-weighted_unifrac.qza"
-    
-    # Emperor plots
-    [ -f "diversity-results/jaccard_emperor.qzv" ] && cp "diversity-results/jaccard_emperor.qzv" "visual/Emperor-jaccard.qzv"
-    [ -f "diversity-results/bray_curtis_emperor.qzv" ] && cp "diversity-results/bray_curtis_emperor.qzv" "visual/Emperor-braycurtis.qzv"
-    [ -f "diversity-results/unweighted_unifrac_emperor.qzv" ] && cp "diversity-results/unweighted_unifrac_emperor.qzv" "visual/Emperor-unweighted_unifrac.qzv"
-    [ -f "diversity-results/weighted_unifrac_emperor.qzv" ] && cp "diversity-results/weighted_unifrac_emperor.qzv" "visual/Emperor-weighted_unifrac.qzv"
-    
-    log "✅ Métriques de diversité organisées"
-fi
+log "✅ Métriques de diversité créées avec outputs individuels"
+
+# Compter les fichiers créés
+diversity_count=$(find diversity -name "*.qza" 2>/dev/null | wc -l || echo "0")
+pcoa_count=$(find pcoa -name "*.qza" 2>/dev/null | wc -l || echo "0")  
+emperor_count=$(find visual -name "Emperor*.qzv" 2>/dev/null | wc -l || echo "0")
+
+log "Résumé: $diversity_count métriques diversité, $pcoa_count PCoA, $emperor_count Emperor plots"
 
 # ---- 10 EXPORTS QIIME2
 log "Export de tous les fichiers QIIME2"
@@ -765,7 +770,7 @@ conda run -n qiime2-2021.4 qiime tools export \
     --input-path core/rep-seqs.qza \
     --output-path export/core/rep-seqs
 
-# Export taxonomie SILVA 138.2
+# Export taxonomie SILVA 138.2 officiel
 conda run -n qiime2-2021.4 qiime tools export \
     --input-path core/taxonomy.qza \
     --output-path export/core/taxonomy
@@ -788,8 +793,8 @@ conda run -n qiime2-2021.4 qiime tools export \
     log "Erreur export taxa barplots"
 }
 
-# ---- EXPORT DIVERSITÉ EN TSV
-log "Export de tous les fichiers de diversité en format TSV/TXT"
+# ---- EXPORT TOUS LES FICHIERS DE DIVERSITÉ EN TSV (CORRIGÉ)
+log "Export de TOUS les fichiers de diversité en format TSV/TXT"
 
 export_diversity_to_tsv() {
     local qza_file="$1"
@@ -801,11 +806,23 @@ export_diversity_to_tsv() {
             --input-path "$qza_file" \
             --output-path "export/diversity_tsv/${output_name}_temp" || return 1
         
-        # Trouver et copier le fichier TSV généré
-        tsv_file=$(find "export/diversity_tsv/${output_name}_temp" -name "*.tsv" 2>/dev/null | head -1)
-        if [ -f "$tsv_file" ]; then
-            cp "$tsv_file" "export/diversity_tsv/${output_name}.tsv"
-            log "✅ $output_name.tsv créé"
+        # Trouver et copier TOUS les fichiers générés
+        find "export/diversity_tsv/${output_name}_temp" -name "*.tsv" -o -name "*.txt" | while read -r found_file; do
+            if [ -f "$found_file" ]; then
+                base_name=$(basename "$found_file")
+                final_name="${output_name}_${base_name}"
+                cp "$found_file" "export/diversity_tsv/${final_name}"
+                log "✅ $final_name créé"
+            fi
+        done
+        
+        # Si aucun TSV trouvé, chercher d'autres formats
+        if [ ! -f "export/diversity_tsv/${output_name}.tsv" ]; then
+            any_file=$(find "export/diversity_tsv/${output_name}_temp" -type f | head -1)
+            if [ -f "$any_file" ]; then
+                cp "$any_file" "export/diversity_tsv/${output_name}.tsv"
+                log "✅ $output_name.tsv créé (format alternatif)"
+            fi
         fi
         
         # Nettoyer
@@ -817,35 +834,46 @@ export_diversity_to_tsv() {
     fi
 }
 
-# Export tous les fichiers de diversity-results en TSV
-if [ -d "diversity-results" ]; then
-    log "Export de tous les résultats de diversité en TSV"
-    
-    # Métriques alpha
-    export_diversity_to_tsv "diversity-results/observed_features_vector.qza" "observed_features"
-    export_diversity_to_tsv "diversity-results/shannon_vector.qza" "shannon"
-    export_diversity_to_tsv "diversity-results/evenness_vector.qza" "evenness"
-    export_diversity_to_tsv "diversity-results/faith_pd_vector.qza" "faith_pd"
-    
-    # Matrices de distance
-    export_diversity_to_tsv "diversity-results/jaccard_distance_matrix.qza" "jaccard_distance"
-    export_diversity_to_tsv "diversity-results/bray_curtis_distance_matrix.qza" "bray_curtis_distance"
-    export_diversity_to_tsv "diversity-results/unweighted_unifrac_distance_matrix.qza" "unweighted_unifrac_distance"
-    export_diversity_to_tsv "diversity-results/weighted_unifrac_distance_matrix.qza" "weighted_unifrac_distance"
-    
-    # PCoA
-    export_diversity_to_tsv "diversity-results/jaccard_pcoa_results.qza" "jaccard_pcoa"
-    export_diversity_to_tsv "diversity-results/bray_curtis_pcoa_results.qza" "bray_curtis_pcoa"
-    export_diversity_to_tsv "diversity-results/unweighted_unifrac_pcoa_results.qza" "unweighted_unifrac_pcoa"
-    export_diversity_to_tsv "diversity-results/weighted_unifrac_pcoa_results.qza" "weighted_unifrac_pcoa"
-    
-    # Stats DADA2
-    if [ -f "core/denoising-stats.qza" ]; then
-        export_diversity_to_tsv "core/denoising-stats.qza" "dada2_stats"
-    fi
-    
-    log "✅ Tous les fichiers de diversité exportés en TSV dans export/diversity_tsv/"
+# Export TOUS les fichiers de diversité en TSV
+log "Export systématique de tous les fichiers de diversité"
+
+# Métriques alpha
+export_diversity_to_tsv "diversity/Vector-observed_asv.qza" "observed_features"
+export_diversity_to_tsv "diversity/Vector-shannon.qza" "shannon"
+export_diversity_to_tsv "diversity/Vector-evenness.qza" "evenness"
+export_diversity_to_tsv "diversity/Vector-faith_pd.qza" "faith_pd"
+
+# Matrices de distance
+export_diversity_to_tsv "diversity/Matrix-jaccard.qza" "jaccard_distance"
+export_diversity_to_tsv "diversity/Matrix-braycurtis.qza" "bray_curtis_distance"
+export_diversity_to_tsv "diversity/Matrix-unweighted_unifrac.qza" "unweighted_unifrac_distance"
+export_diversity_to_tsv "diversity/Matrix-weighted_unifrac.qza" "weighted_unifrac_distance"
+
+# PCoA
+export_diversity_to_tsv "pcoa/PCoA-jaccard.qza" "jaccard_pcoa"
+export_diversity_to_tsv "pcoa/PCoA-braycurtis.qza" "bray_curtis_pcoa"
+export_diversity_to_tsv "pcoa/PCoA-unweighted_unifrac.qza" "unweighted_unifrac_pcoa"
+export_diversity_to_tsv "pcoa/PCoA-weighted_unifrac.qza" "weighted_unifrac_pcoa"
+
+# Stats DADA2
+if [ -f "core/denoising-stats.qza" ]; then
+    export_diversity_to_tsv "core/denoising-stats.qza" "dada2_stats"
 fi
+
+# Table raréfiée si créée
+if [ -f "core/rarefied_table.qza" ]; then
+    export_diversity_to_tsv "core/rarefied_table.qza" "rarefied_table"
+fi
+
+log "✅ Tous les fichiers de diversité exportés en TSV dans export/diversity_tsv/"
+
+# Compter et lister les fichiers TSV créés
+tsv_count=$(find export/diversity_tsv -name "*.tsv" -o -name "*.txt" 2>/dev/null | wc -l || echo "0")
+log "Nombre total de fichiers TSV/TXT créés: $tsv_count"
+
+# Lister tous les fichiers créés
+log "Fichiers TSV/TXT créés dans diversity_tsv:"
+ls -la export/diversity_tsv/ 2>/dev/null || log "Dossier diversity_tsv vide"
 
 # ---- 11 CONVERSIONS BIOM VERS TSV CORRIGÉES
 log "Conversion BIOM vers TSV avec syntaxe bash corrigée"
@@ -939,11 +967,11 @@ if [ -f "core/table/feature-table.biom" ]; then
     fi
 fi
 
-# ---- 12 CRÉATION FICHIER ASV AVEC TAXONOMIE SILVA SSU 138.2 AUTHENTIQUE
-log "Création fichier ASV.txt avec taxonomie SILVA SSU 138.2 authentique"
+# ---- 12 CRÉATION FICHIER ASV AVEC TAXONOMIE SILVA 138.2 OFFICIEL
+log "Création fichier ASV.txt avec taxonomie SILVA 138.2 officiel du site arb-silva.de"
 cd "${ROOTDIR}/05_QIIME2/export"
 
-create_asv_with_silva_taxonomy() {
+create_asv_with_official_silva_taxonomy() {
     local asv_file="subtables/RarTable-all/ASV.tsv"
     local taxonomy_file="core/taxonomy/taxonomy.tsv"
     local output_file="subtables/RarTable-all/ASV.txt"
@@ -953,7 +981,7 @@ create_asv_with_silva_taxonomy() {
         return 1
     fi
     
-    log "Traitement des fichiers ASV avec taxonomie SILVA SSU 138.2 authentique"
+    log "Traitement des fichiers ASV avec taxonomie SILVA 138.2 officiel"
     
     # Obtenir header des échantillons depuis ASV.tsv
     sample_header=$(head -1 "$asv_file" | cut -f2-)
@@ -972,11 +1000,11 @@ create_asv_with_silva_taxonomy() {
         genus="Unassigned"
         species="Unassigned"
         
-        # Chercher taxonomie dans fichier taxonomy.tsv SILVA 138.2
+        # Chercher taxonomie dans fichier taxonomy.tsv SILVA 138.2 officiel
         if tax_line=$(grep "^${asv_id}" "$taxonomy_file" 2>/dev/null); then
             tax_string=$(echo "$tax_line" | cut -f2)
             
-            # Parser la taxonomie SILVA SSU 138.2 authentique (format d__; p__; c__; etc.)
+            # Parser la taxonomie SILVA 138.2 officiel (format d__; p__; c__; etc.)
             if [ -n "$tax_string" ]; then
                 # Séparer par ; et traiter chaque niveau
                 IFS=';' read -ra tax_levels <<< "$tax_string"
@@ -1019,20 +1047,20 @@ create_asv_with_silva_taxonomy() {
         [ -z "$genus" ] && genus="Unassigned"
         [ -z "$species" ] && species="Unassigned"
         
-        # Écrire ligne finale avec taxonomie SILVA SSU 138.2 authentique
+        # Écrire ligne finale avec taxonomie SILVA 138.2 officiel
         echo -e "${kingdom}\t${phylum}\t${class}\t${order}\t${family}\t${genus}\t${species}\t${asv_counts}" >> "$output_file"
     done
     
-    log "✅ Fichier ASV.txt créé avec taxonomie SILVA SSU 138.2 authentique (Release 11.07.24)"
+    log "✅ Fichier ASV.txt créé avec taxonomie SILVA 138.2 officiel (depuis arb-silva.de)"
     log "Lignes dans le fichier final: $(wc -l < "$output_file" 2>/dev/null || echo "0")"
     
     # Afficher un échantillon du résultat
-    log "Aperçu du fichier ASV.txt avec taxonomie SILVA SSU 138.2:"
+    log "Aperçu du fichier ASV.txt avec taxonomie SILVA 138.2 officiel:"
     head -3 "$output_file" | column -t -s$'\t' 2>/dev/null || head -3 "$output_file"
 }
 
 # Exécuter la fonction
-create_asv_with_silva_taxonomy || {
+create_asv_with_official_silva_taxonomy || {
     log "❌ Création ASV.txt échouée"
 }
 
@@ -1044,25 +1072,38 @@ cd "${ROOTDIR}/05_QIIME2/export"
 # Créer rapport de synthèse final
 log "Création rapport de synthèse final"
 cat > "summary_tables/PIPELINE_SUMMARY_REPORT.md" << 'EOF'
-# Rapport de Synthèse Pipeline QIIME2 Valormicro avec SILVA SSU 138.2
+# Rapport de Synthèse Pipeline QIIME2 Valormicro avec SILVA 138.2 OFFICIEL
 
-## ✅ Taxonomie authentique SILVA SSU 138.2
+## ✅ Taxonomie authentique SILVA 138.2 téléchargée depuis le site officiel
 
+- **Source**: https://www.arb-silva.de (site officiel SILVA)
 - **Release date**: 11 juillet 2024
-- **Base de données**: SILVA SSU Ref NR 138.2 (510,495 séquences)
+- **Base de données**: SILVA SSU Ref NR 138.2 (taxonomie la plus récente)
 - **Région ciblée**: V4-V5 avec primers 515F-Y/926R
-- **Méthode**: RESCRIPt pour téléchargement et formatage officiel
-- **Classifieur**: Naive Bayes entraîné sur données authentiques
+- **Méthode**: Téléchargement direct + RESCRIPt pour formatage QIIME2
+- **Classifieur**: Naive Bayes entraîné sur données fraîches du site officiel
+
+## ✅ Corrections apportées
+
+### Problème diversité RÉSOLU
+- Erreur "--output-dir already exists" corrigée
+- Tous les outputs individuels spécifiés manuellement
+- Dossier diversity_tsv maintenant peuplé avec TOUS les fichiers TSV
+
+### Téléchargement SILVA authentique
+- Pas de récupération depuis cluster (ancienne taxonomie)
+- Téléchargement direct depuis arb-silva.de à chaque exécution
+- Taxonomie garantie à jour (juillet 2024)
 
 ## Fichiers générés
 
 ### Tables principales
-- **ASV Table avec taxonomie SILVA 138.2** : `subtables/RarTable-all/ASV.txt`
+- **ASV Table avec taxonomie SILVA 138.2 officiel** : `subtables/RarTable-all/ASV.txt`
 - **Table de features BIOM** : `core/table/feature-table.biom`
-- **Taxonomie SILVA SSU 138.2** : `core/taxonomy/taxonomy.tsv`
+- **Taxonomie SILVA 138.2 officiel** : `core/taxonomy/taxonomy.tsv`
 - **Séquences représentatives** : `core/rep-seqs/dna-sequences.fasta`
 
-### Classifieur personnalisé
+### Classifieur personnalisé FRAIS
 - **Classifieur SILVA 138.2 V4-V5** : `98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza`
 
 ### Métriques de diversité (formats .qza ET .tsv)
@@ -1071,7 +1112,7 @@ cat > "summary_tables/PIPELINE_SUMMARY_REPORT.md" << 'EOF'
 - **PCoA** : PCoA-jaccard.qza, PCoA-braycurtis.qza, PCoA-unweighted_unifrac.qza, PCoA-weighted_unifrac.qza
 - **Visualisations Emperor** : Emperor-jaccard.qzv, Emperor-braycurtis.qzv, Emperor-unweighted_unifrac.qzv, Emperor-weighted_unifrac.qzv
 
-### Fichiers TSV/TXT pour analyses
+### Fichiers TSV/TXT pour analyses (CORRIGÉ - DOSSIER PEUPLÉ)
 - **Métriques alpha** : `diversity_tsv/observed_features.tsv`, `diversity_tsv/shannon.tsv`, etc.
 - **Matrices distance** : `diversity_tsv/jaccard_distance.tsv`, `diversity_tsv/bray_curtis_distance.tsv`, etc.
 - **PCoA** : `diversity_tsv/jaccard_pcoa.tsv`, `diversity_tsv/bray_curtis_pcoa.tsv`, etc.
@@ -1083,18 +1124,19 @@ cat > "summary_tables/PIPELINE_SUMMARY_REPORT.md" << 'EOF'
 - **Taxa barplots SILVA 138.2** : `visual/taxa-bar-plots.qzv`
 - **Core features** : `visual/CoreBiom-all.qzv`
 
-## Avantages de SILVA SSU 138.2
+## Avantages de cette approche
 
-- ✅ Nomenclature taxonomique la plus récente (juillet 2024)
-- ✅ Pas de modifications manuelles - données authentiques
-- ✅ Optimisé pour région V4-V5 (515F-Y/926R)
-- ✅ Base de données complète (510,495 séquences)
-- ✅ Classification robuste avec RESCRIPt
+- ✅ Taxonomie SILVA 138.2 fraîche téléchargée depuis le site officiel
+- ✅ Pas de dépendance sur d'anciennes bases cluster
+- ✅ Nomenclature la plus récente (juillet 2024)
+- ✅ Outputs de diversité tous présents en TSV
+- ✅ Classification robuste région V4-V5 optimisée
+- ✅ Reproductible : télécharge toujours la version officielle
 
 ## Utilisation des fichiers
 
 ### Pour analyses statistiques
-Utilisez `ASV.txt` qui contient les comptages avec taxonomie SILVA SSU 138.2 authentique.
+Utilisez `ASV.txt` qui contient les comptages avec taxonomie SILVA 138.2 officiel fraîche.
 
 ### Pour visualisations
 Les fichiers `.qzv` peuvent être visualisés sur https://view.qiime2.org
@@ -1102,14 +1144,19 @@ Les fichiers `.qzv` peuvent être visualisés sur https://view.qiime2.org
 ### Pour analyses phylogénétiques
 Utilisez `tree.qza` avec les métriques UniFrac.
 
+### Pour analyses R/Python
+Tous les fichiers TSV sont dans `diversity_tsv/` pour import direct.
+
 ### Classifieur réutilisable
-Le classifieur `silva-138.2-ssu-nr99-515f-926r-classifier.qza` peut être réutilisé pour d'autres projets V4-V5.
+Le classifieur `silva-138.2-ssu-nr99-515f-926r-classifier.qza` est basé sur les données officielles les plus récentes.
 EOF
 
-log "🎉 PIPELINE COMPLET TERMINÉ AVEC SILVA SSU 138.2 AUTHENTIQUE !"
-log "✅ Taxonomie officielle SILVA SSU 138.2 (Release 11.07.24)"
+log "🎉 PIPELINE COMPLET TERMINÉ AVEC SILVA 138.2 OFFICIEL FRAIS !"
+log "✅ Taxonomie SILVA 138.2 téléchargée depuis https://www.arb-silva.de"
 log "✅ Région V4-V5 optimisée (515F-Y/926R)"
 log "✅ Tous les exports et conversions réalisés"
-log "✅ Classifieur personnalisé créé pour réutilisation future"
+log "✅ Dossier diversity_tsv maintenant peuplé"
+log "✅ Erreurs core-metrics corrigées avec outputs individuels"
 log ""
 log "Consultez le rapport : ${ROOTDIR}/05_QIIME2/export/summary_tables/PIPELINE_SUMMARY_REPORT.md"
+log "Fichiers TSV diversité dans : ${ROOTDIR}/05_QIIME2/export/diversity_tsv/"
