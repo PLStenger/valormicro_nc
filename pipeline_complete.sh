@@ -380,172 +380,46 @@ conda run -n qiime2-2021.4 qiime dada2 denoise-paired \
 
 log "🎉 DADA2 RÉUSSI !"
 
-# ---- 06 TÉLÉCHARGEMENT SILVA 138.2 DEPUIS SITE OFFICIEL
-log "Téléchargement SILVA 138.2 directement depuis site officiel"
+# ---- 05 SILVA CLASSIFIER EXISTANT
+log "Utilisation SILVA SSU 138.2 existant"
+cd "${ROOTDIR}/98_databasefiles"
 
-# Variables pour les chemins Silva
-SILVA_BASE_DIR="${ROOTDIR}/98_databasefiles"
-CLASSIFIER_PATH="${SILVA_BASE_DIR}/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
-
-cd "$SILVA_BASE_DIR"
-
-# Vérifier si le classifieur existe et est valide
-NEED_CLASSIFIER=true
-if [ -f "$CLASSIFIER_PATH" ]; then
-    conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER_PATH" 2>/dev/null && {
-        log "✅ Classifieur Silva 138.2 valide trouvé : $CLASSIFIER_PATH"
-        NEED_CLASSIFIER=false
-    } || {
-        log "❌ Classifieur invalide, recréation nécessaire"
-        rm -f "$CLASSIFIER_PATH"
-    }
-fi
-
-# Créer le classifieur si nécessaire
-if [ "$NEED_CLASSIFIER" = true ]; then
-    log "Téléchargement SILVA 138.2 depuis site officiel https://www.arb-silva.de"
-    
-    # URLs officielles SILVA 138.2 [web:154][web:136]
-    log "Téléchargement fichiers SILVA SSU 138.2 officiel"
-    
-    # 1. Télécharger les séquences NR99
-    log "Téléchargement séquences SILVA 138.2 NR99"
-    wget -O "SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz" \
-        "https://www.arb-silva.de/fileadmin/silva_databases/release_138_2/Exports/SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz" || {
-        log "❌ Erreur téléchargement séquences SILVA"
-        exit 1
-    }
-    
-    # 2. Télécharger la taxonomie
-    log "Téléchargement taxonomie SILVA 138.2"
-    wget -O "tax_slv_ssu_138.2.txt.gz" \
-        "https://www.arb-silva.de/fileadmin/silva_databases/release_138_2/Exports/taxonomy/tax_slv_ssu_138.2.txt.gz" || {
-        log "❌ Erreur téléchargement taxonomie SILVA"
-        exit 1
-    }
-    
-    # Décompresser
-    log "Décompression fichiers SILVA 138.2"
-    gunzip -f SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz tax_slv_ssu_138.2.txt.gz
-    
-    # Installation RESCRIPt si nécessaire
-    log "Installation/vérification RESCRIPt"
-    conda run -n qiime2-2021.4 python -c "import rescript" 2>/dev/null || {
-        log "Installation RESCRIPt dans environnement QIIME2"
-        conda install -n qiime2-2021.4 -c conda-forge -c bioconda -c qiime2 q2-rescript -y || {
-            log "❌ Impossible d'installer RESCRIPt"
-            exit 1
-        }
-    }
-    
-    # Import des données SILVA avec RESCRIPt
-    log "Import séquences SILVA 138.2 dans QIIME2"
-    conda run -n qiime2-2021.4 qiime tools import \
-        --type 'FeatureData[RNASequence]' \
-        --input-path SILVA_138.2_SSURef_NR99_tax_silva.fasta \
-        --output-path silva-138.2-ssu-nr99-seqs-rna.qza
-    
-    # Conversion RNA vers DNA
-    log "Conversion RNA vers DNA"
-    conda run -n qiime2-2021.4 qiime rescript reverse-transcribe \
-        --i-rna-sequences silva-138.2-ssu-nr99-seqs-rna.qza \
-        --o-dna-sequences silva-138.2-ssu-nr99-seqs.qza
-    
-    # Parser taxonomie SILVA avec RESCRIPt
-    log "Parser taxonomie SILVA 138.2 avec RESCRIPt"
-    conda run -n qiime2-2021.4 qiime rescript parse-silva-taxonomy \
-        --i-taxonomy-tree tax_slv_ssu_138.2.txt \
-        --o-taxonomy silva-138.2-ssu-nr99-tax.qza || {
-        
-        log "❌ Erreur parsing taxonomie avec RESCRIPt, formatage manuel"
-        
-        # Formatage manuel si RESCRIPt échoue
-        awk -F'\t' 'NR>1 && $3 != "" {
-            gsub(/ /, "_", $3)
-            gsub(/;/, "; ", $3)
-            print $1"\t"$3
-        }' tax_slv_ssu_138.2.txt | head -100000 > silva_138.2_tax_qiime.tsv
-        
-        conda run -n qiime2-2021.4 qiime tools import \
-            --type 'FeatureData[Taxonomy]' \
-            --input-path silva_138.2_tax_qiime.tsv \
-            --output-path silva-138.2-ssu-nr99-tax.qza \
-            --input-format HeaderlessTSVTaxonomyFormat
-    }
-    
-    log "✅ Données SILVA 138.2 importées dans QIIME2"
-    
-    # Étape 2: Extraction région V4-V5 avec primers 515F-Y/926R
-    log "Extraction région V4-V5 avec primers 515F-Y/926R"
+CLASSIFIER="${ROOTDIR}/98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
+if ! conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER" 2>/dev/null; then
+    log "Création classifier SILVA 138.2"
+    cd "${ROOTDIR}/98_databasefiles"
+    # Extraction région V4-V5
     conda run -n qiime2-2021.4 qiime feature-classifier extract-reads \
-        --i-sequences silva-138.2-ssu-nr99-seqs.qza \
+        --i-sequences silva-138.2-ssu-nr99-seqs-derep-uniq.qza \
         --p-f-primer GTGYCAGCMGCCGCGGTAA \
         --p-r-primer CCGYCAATTYMTTTRAGTTT \
         --p-n-jobs 2 \
         --p-read-orientation 'forward' \
-        --o-reads silva-138.2-ssu-nr99-seqs-515f-926r.qza || {
-        log "Erreur extraction reads, utilisation séquences complètes"
-        cp silva-138.2-ssu-nr99-seqs.qza silva-138.2-ssu-nr99-seqs-515f-926r.qza
-    }
-    
-    # Étape 3: Déréplication avec RESCRIPt
-    log "Déréplication SILVA 138.2 avec RESCRIPt"
+        --o-reads silva-138.2-ssu-nr99-seqs-515f-926r.qza
+
+    # Déréplication
     conda run -n qiime2-2021.4 qiime rescript dereplicate \
         --i-sequences silva-138.2-ssu-nr99-seqs-515f-926r.qza \
-        --i-taxa silva-138.2-ssu-nr99-tax.qza \
-        --p-mode 'uniq' \
+        --i-taxa silva-138.2-ssu-nr99-tax-derep-uniq.qza \
+        --p-mode uniq \
         --o-dereplicated-sequences silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
-        --o-dereplicated-taxa silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza || {
-        log "Erreur déréplication, utilisation fichiers originaux"
-        cp silva-138.2-ssu-nr99-seqs-515f-926r.qza silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza
-        cp silva-138.2-ssu-nr99-tax.qza silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza
-    }
-    
-    # Étape 4: Entraînement classifieur naive bayes
-    log "Création classifieur naive bayes SILVA 138.2 pour V4-V5"
+        --o-dereplicated-taxa silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza
+
+    # Fit classifier
     conda run -n qiime2-2021.4 qiime feature-classifier fit-classifier-naive-bayes \
         --i-reference-reads silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
         --i-reference-taxonomy silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza \
-        --o-classifier "$CLASSIFIER_PATH" && {
-        log "✅ Classifieur SILVA 138.2 créé avec succès depuis site officiel"
-        
-        # Nettoyer fichiers temporaires
-        rm -f silva-138.2-ssu-nr99-seqs-515f-926r.qza \
-              silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
-              silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza \
-              SILVA_138.2_SSURef_NR99_tax_silva.fasta \
-              tax_slv_ssu_138.2.txt \
-              silva_138.2_tax_qiime.tsv \
-              silva-138.2-ssu-nr99-seqs-rna.qza 2>/dev/null || true
-    } || {
-        log "❌ Échec création classifieur SILVA 138.2"
-        exit 1
-    }
+        --o-classifier "$CLASSIFIER"
 fi
 
-# Validation finale du classifieur
-conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER_PATH" || {
-    log "❌ Classifieur SILVA 138.2 invalide"
-    exit 1
-}
-
-log "✅ Classifieur SILVA 138.2 officiel prêt (téléchargé depuis https://www.arb-silva.de)"
-
-# ---- 07 TAXONOMIE AVEC SILVA 138.2 OFFICIEL
-log "Assignation taxonomique avec SILVA 138.2 officiel du site https://www.arb-silva.de"
+# ---- 06 CLASSIFICATION
+log "Classification taxonomique SILVA 138.2"
 cd "${ROOTDIR}/05_QIIME2/core"
-
-# Classification taxonomique
-log "Lancement classification avec SILVA 138.2 officiel"
 conda run -n qiime2-2021.4 qiime feature-classifier classify-sklearn \
-    --i-classifier "$CLASSIFIER_PATH" \
+    --i-classifier "${ROOTDIR}/98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza" \
     --i-reads rep-seqs.qza \
     --o-classification taxonomy.qza \
-    --p-n-jobs 4 \
-    --verbose || {
-    log "❌ Classification échouée"
-    exit 1
-}
+    --p-n-jobs "$NTHREADS"
 
 log "✅ Classification taxonomique SILVA 138.2 officiel réussie"
 
