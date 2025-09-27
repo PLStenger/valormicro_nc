@@ -330,7 +330,7 @@ MANIFEST_CONTROL_PAIRED="${ROOTDIR}/98_databasefiles/manifest_control_paired"
 
 # Import principal
 log "Import QIIME2 principal avec IDs uniques"
-conda run -n qiime2-2021.4 qiime tools import \
+conda run -n qiime2-amplicon-2025.7 qiime tools import \
     --type 'SampleData[PairedEndSequencesWithQuality]' \
     --input-path "$MANIFEST_PAIRED" \
     --output-path "core/demux_paired.qza" \
@@ -350,7 +350,7 @@ log "✅ Import QIIME2 principal réussi avec IDs uniques !"
 HAS_CONTROLS=false
 if [ -f "$MANIFEST_CONTROL_PAIRED" ] && [ -s "$MANIFEST_CONTROL_PAIRED" ]; then
     log "Import contrôles QIIME2"
-    conda run -n qiime2-2021.4 qiime tools import \
+    conda run -n qiime2-amplicon-2025.7 qiime tools import \
         --type 'SampleData[PairedEndSequencesWithQuality]' \
         --input-path "$MANIFEST_CONTROL_PAIRED" \
         --output-path "core/demux_neg.qza" \
@@ -365,7 +365,7 @@ cd "${ROOTDIR}/05_QIIME2/core"
 
 # Tentative DADA2
 log "Lancement DADA2 avec fichiers paired synchronisés et IDs uniques..."
-conda run -n qiime2-2021.4 qiime dada2 denoise-paired \
+conda run -n qiime2-amplicon-2025.7 qiime dada2 denoise-paired \
     --i-demultiplexed-seqs demux_paired.qza \
     --o-table table.qza \
     --o-representative-sequences rep-seqs.qza \
@@ -385,29 +385,29 @@ log "Utilisation SILVA SSU 138.2 existant"
 cd "${ROOTDIR}/98_databasefiles"
 
 CLASSIFIER="${ROOTDIR}/98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
-if ! conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER" 2>/dev/null; then
+if ! conda run -n qiime2-amplicon-2025.7 qiime tools validate "$CLASSIFIER" 2>/dev/null; then
     log "Création classifier SILVA 138.2"
     cd "${ROOTDIR}/98_databasefiles"
 
- conda run -n qiime2-2021.4 qiime rescript get-silva-data \
+ conda run -n qiime2-amplicon-2025.7 qiime rescript get-silva-data \
     --p-version '138.2' \
     --p-target 'SSURef_NR99' \
     --o-silva-sequences silva-138.2-ssu-nr99-rna-seqs.qza \
     --o-silva-taxonomy silva-138.2-ssu-nr99-tax.qza
 
 # If you'd like to be able to jump to steps that only take FeatureData[Sequence] as input you can convert your data to FeatureData[Sequence] like so:
- conda run -n qiime2-2021.4 qiime rescript reverse-transcribe \
+ conda run -n qiime2-amplicon-2025.7 qiime rescript reverse-transcribe \
     --i-rna-sequences silva-138.2-ssu-nr99-rna-seqs.qza \
     --o-dna-sequences silva-138.2-ssu-nr99-seqs.qza
 
 # “Culling” low-quality sequences with cull-seqs
 # Here we’ll remove sequences that contain 5 or more ambiguous bases (IUPAC compliant ambiguity bases) and any homopolymers that are 8 or more bases in length. These are the default parameters.
- conda run -n qiime2-2021.4 qiime rescript cull-seqs \
+ conda run -n qiime2-amplicon-2025.7 qiime rescript cull-seqs \
     --i-sequences silva-138.2-ssu-nr99-seqs.qza \
     --o-clean-sequences silva-138.2-ssu-nr99-seqs-cleaned.qza
 
 # Filtering sequences by length and taxonomy
- conda run -n qiime2-2021.4 qiime rescript filter-seqs-length-by-taxon \
+ conda run -n qiime2-amplicon-2025.7 qiime rescript filter-seqs-length-by-taxon \
     --i-sequences silva-138.2-ssu-nr99-seqs-cleaned.qza \
     --i-taxonomy silva-138.2-ssu-nr99-tax.qza \
     --p-labels Archaea Bacteria Eukaryota \
@@ -416,7 +416,7 @@ if ! conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER" 2>/dev/null; 
     --o-discarded-seqs silva-138.2-ssu-nr99-seqs-discard.qza 
 
 #Dereplicating in uniq mode
- conda run -n qiime2-2021.4 qiime rescript dereplicate \
+ conda run -n qiime2-amplicon-2025.7 qiime rescript dereplicate \
     --i-sequences silva-138.2-ssu-nr99-seqs-filt.qza  \
     --i-taxa silva-138.2-ssu-nr99-tax.qza \
     --p-mode 'uniq' \
@@ -425,13 +425,13 @@ if ! conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER" 2>/dev/null; 
 
 
 
- conda run -n qiime2-2021.4 qiime feature-classifier fit-classifier-naive-bayes \
+ conda run -n qiime2-amplicon-2025.7 qiime feature-classifier fit-classifier-naive-bayes \
   --i-reference-reads  silva-138.2-ssu-nr99-seqs-derep-uniq.qza \
   --i-reference-taxonomy silva-138.2-ssu-nr99-tax-derep-uniq.qza \
   --o-classifier silva-138.2-ssu-nr99-classifier.qza        
     
     # Extraction région V4-V5
-    conda run -n qiime2-2021.4 qiime feature-classifier extract-reads \
+    conda run -n qiime2-amplicon-2025.7 qiime feature-classifier extract-reads \
         --i-sequences silva-138.2-ssu-nr99-seqs-derep-uniq.qza \
         --p-f-primer GTGYCAGCMGCCGCGGTAA \
         --p-r-primer CCGYCAATTYMTTTRAGTTT \
@@ -440,7 +440,7 @@ if ! conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER" 2>/dev/null; 
         --o-reads silva-138.2-ssu-nr99-seqs-515f-926r.qza
 
     # Déréplication
-    conda run -n qiime2-2021.4 qiime rescript dereplicate \
+    conda run -n qiime2-amplicon-2025.7 qiime rescript dereplicate \
         --i-sequences silva-138.2-ssu-nr99-seqs-515f-926r.qza \
         --i-taxa silva-138.2-ssu-nr99-tax-derep-uniq.qza \
         --p-mode uniq \
@@ -448,7 +448,7 @@ if ! conda run -n qiime2-2021.4 qiime tools validate "$CLASSIFIER" 2>/dev/null; 
         --o-dereplicated-taxa silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza
 
     # Fit classifier
-    conda run -n qiime2-2021.4 qiime feature-classifier fit-classifier-naive-bayes \
+    conda run -n qiime2-amplicon-2025.7 qiime feature-classifier fit-classifier-naive-bayes \
         --i-reference-reads silva-138.2-ssu-nr99-seqs-515f-926r-uniq.qza \
         --i-reference-taxonomy silva-138.2-ssu-nr99-tax-515f-926r-derep-uniq.qza \
         --o-classifier "$CLASSIFIER"
@@ -458,7 +458,7 @@ fi
 log "Classification taxonomique SILVA 138.2"
 cd "${ROOTDIR}/05_QIIME2/core"
 
-conda run -n qiime2-2021.4 qiime feature-classifier classify-sklearn \
+conda run -n qiime2-amplicon-2025.7 qiime feature-classifier classify-sklearn \
     --i-classifier "${ROOTDIR}/98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza" \
     --i-reads rep-seqs.qza \
     --o-classification taxonomy.qza \
@@ -467,7 +467,7 @@ conda run -n qiime2-2021.4 qiime feature-classifier classify-sklearn \
 log "✅ Classification taxonomique SILVA 138.2 officiel réussie"
 
 # Vérifier le contenu de la taxonomie
-conda run -n qiime2-2021.4 qiime tools export \
+conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path taxonomy.qza \
     --output-path temp_tax_check
 
@@ -487,7 +487,7 @@ cd "${ROOTDIR}/05_QIIME2/core"
 
 # Summary de la table
 log "Summary table pour profondeur raréfaction"
-conda run -n qiime2-2021.4 qiime feature-table summarize \
+conda run -n qiime2-amplicon-2025.7 qiime feature-table summarize \
     --i-table table.qza \
     --o-visualization "../visual/table-summary.qzv" || {
     log "Erreur summary table"
@@ -495,7 +495,7 @@ conda run -n qiime2-2021.4 qiime feature-table summarize \
 }
 
 # Export du summary pour extraction automatique
-conda run -n qiime2-2021.4 qiime tools export \
+conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path "../visual/table-summary.qzv" \
     --output-path "../visual/table-summary"
 
@@ -516,7 +516,7 @@ else
 fi
 
 # Raréfaction
-conda run -n qiime2-2021.4 qiime feature-table rarefy \
+conda run -n qiime2-amplicon-2025.7 qiime feature-table rarefy \
     --i-table table.qza \
     --p-sampling-depth "$RAREFACTION_DEPTH" \
     --o-rarefied-table "../subtables/RarTable-all.qza" || {
@@ -525,7 +525,7 @@ conda run -n qiime2-2021.4 qiime feature-table rarefy \
 }
 
 # Core features analysis
-conda run -n qiime2-2021.4 qiime feature-table core-features \
+conda run -n qiime2-amplicon-2025.7 qiime feature-table core-features \
     --i-table "../subtables/RarTable-all.qza" \
     --p-min-fraction 0.1 \
     --p-max-fraction 1.0 \
@@ -536,7 +536,7 @@ conda run -n qiime2-2021.4 qiime feature-table core-features \
 
 # Taxa barplots
 log "Génération taxa barplots avec SILVA 138.2 officiel"
-conda run -n qiime2-2021.4 qiime taxa barplot \
+conda run -n qiime2-amplicon-2025.7 qiime taxa barplot \
     --i-table table.qza \
     --i-taxonomy taxonomy.qza \
     --o-visualization "../visual/taxa-bar-plots.qzv" || {
@@ -552,7 +552,7 @@ cd "${ROOTDIR}/05_QIIME2/core"
 # Arbre phylogénétique
 log "Génération arbre phylogénétique"
 if [ ! -f "tree.qza" ]; then
-    conda run -n qiime2-2021.4 qiime phylogeny align-to-tree-mafft-fasttree \
+    conda run -n qiime2-amplicon-2025.7 qiime phylogeny align-to-tree-mafft-fasttree \
         --i-sequences rep-seqs.qza \
         --o-alignment aligned-rep-seqs.qza \
         --o-masked-alignment masked-aligned-rep-seqs.qza \
@@ -586,7 +586,7 @@ rm -rf diversity-results 2>/dev/null || true
 # Core metrics phylogenetic avec outputs individuels [web:33][web:25]
 log "Lancement core-metrics-phylogenetic avec tous les outputs individuels"
 
-conda run -n qiime2-2021.4 qiime diversity core-metrics-phylogenetic \
+conda run -n qiime2-amplicon-2025.7 qiime diversity core-metrics-phylogenetic \
     --i-table table.qza \
     --i-phylogeny tree.qza \
     --p-sampling-depth "$RAREFACTION_DEPTH" \
@@ -612,7 +612,7 @@ conda run -n qiime2-2021.4 qiime diversity core-metrics-phylogenetic \
     log "Erreur core-metrics-phylogenetic, tentative sans phylogénie"
     
     # Alternative sans phylogénie avec tous les outputs individuels
-    conda run -n qiime2-2021.4 qiime diversity core-metrics \
+    conda run -n qiime2-amplicon-2025.7 qiime diversity core-metrics \
         --i-table table.qza \
         --p-sampling-depth "$RAREFACTION_DEPTH" \
         --m-metadata-file "../98_databasefiles/diversity-metadata.tsv" \
@@ -630,28 +630,28 @@ conda run -n qiime2-2021.4 qiime diversity core-metrics-phylogenetic \
         log "Erreur core-metrics, création métriques individuelles"
         
         # Créer métriques alpha individuellement
-        conda run -n qiime2-2021.4 qiime diversity alpha \
+        conda run -n qiime2-amplicon-2025.7 qiime diversity alpha \
             --i-table table.qza \
             --p-metric observed_features \
             --o-alpha-diversity diversity/Vector-observed_asv.qza || true
             
-        conda run -n qiime2-2021.4 qiime diversity alpha \
+        conda run -n qiime2-amplicon-2025.7 qiime diversity alpha \
             --i-table table.qza \
             --p-metric shannon \
             --o-alpha-diversity diversity/Vector-shannon.qza || true
             
-        conda run -n qiime2-2021.4 qiime diversity alpha \
+        conda run -n qiime2-amplicon-2025.7 qiime diversity alpha \
             --i-table table.qza \
             --p-metric pielou_e \
             --o-alpha-diversity diversity/Vector-evenness.qza || true
         
         # Créer matrices beta individuellement
-        conda run -n qiime2-2021.4 qiime diversity beta \
+        conda run -n qiime2-amplicon-2025.7 qiime diversity beta \
             --i-table table.qza \
             --p-metric jaccard \
             --o-distance-matrix diversity/Matrix-jaccard.qza || true
             
-        conda run -n qiime2-2021.4 qiime diversity beta \
+        conda run -n qiime2-amplicon-2025.7 qiime diversity beta \
             --i-table table.qza \
             --p-metric braycurtis \
             --o-distance-matrix diversity/Matrix-braycurtis.qza || true
@@ -678,33 +678,33 @@ mkdir -p "${ROOTDIR}/05_QIIME2/export/core" \
 cd "${ROOTDIR}/05_QIIME2"
 
 # Export table principale
-conda run -n qiime2-2021.4 qiime tools export \
+conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path core/table.qza \
     --output-path export/core/table
 
 # Export séquences représentatives
-conda run -n qiime2-2021.4 qiime tools export \
+conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path core/rep-seqs.qza \
     --output-path export/core/rep-seqs
 
 # Export taxonomie SILVA 138.2 officiel
-conda run -n qiime2-2021.4 qiime tools export \
+conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path core/taxonomy.qza \
     --output-path export/core/taxonomy
 
 # Export table raréfiée
-conda run -n qiime2-2021.4 qiime tools export \
+conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path subtables/RarTable-all.qza \
     --output-path export/subtables/RarTable-all
 
 # Export visualisations
-conda run -n qiime2-2021.4 qiime tools export \
+conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path visual/CoreBiom-all.qzv \
     --output-path export/visual/CoreBiom-all || {
     log "Erreur export CoreBiom visualization"
 }
 
-conda run -n qiime2-2021.4 qiime tools export \
+conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path visual/taxa-bar-plots.qzv \
     --output-path export/visual/taxa-bar-plots || {
     log "Erreur export taxa barplots"
@@ -719,7 +719,7 @@ export_diversity_to_tsv() {
     
     if [ -f "$qza_file" ]; then
         log "Export $output_name en TSV"
-        conda run -n qiime2-2021.4 qiime tools export \
+        conda run -n qiime2-amplicon-2025.7 qiime tools export \
             --input-path "$qza_file" \
             --output-path "export/diversity_tsv/${output_name}_temp" || return 1
         
@@ -792,7 +792,7 @@ export_diversity_corrected() {
         rm -rf "$temp_dir"
         mkdir -p "$temp_dir"
         
-        conda run -n qiime2-2021.4 qiime tools export \
+        conda run -n qiime2-amplicon-2025.7 qiime tools export \
             --input-path "$qza_file" \
             --output-path "$temp_dir" && {
             
@@ -877,7 +877,7 @@ if [ -f "subtables/RarTable-all/feature-table.biom" ]; then
     log "Conversion table raréfiée BIOM"
     
     # Tentative conversion biom
-    if conda run -n qiime2-2021.4 biom convert \
+    if conda run -n qiime2-amplicon-2025.7 biom convert \
         -i subtables/RarTable-all/feature-table.biom \
         -o subtables/RarTable-all/table-from-biom.tsv \
         --to-tsv; then
